@@ -131,19 +131,11 @@ async function startBot() {
       console.log('WhatsApp Bot successfully connected!');
     }
   });
-
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
-    const msg = messages[0];
-    if (!msg.message || msg.key.fromMe) return;
-
-    // AI message handling logic will be placed here
-  });
 }
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server web running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
   startBot();
 });
 EOF

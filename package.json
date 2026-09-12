@@ -1,4 +1,3 @@
-
 cat << 'EOF' > package.json
 {
   "name": "digital-charles",
