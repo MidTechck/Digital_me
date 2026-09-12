@@ -1,4 +1,3 @@
-cat << 'EOF' > src/engine/learning.js
 import fs from 'fs';
 import path from 'path';
 import Groq from 'groq-sdk';
@@ -68,5 +67,4 @@ Return ONLY a JSON object with updated fields if new information is detected:
     console.error('[LEARNING ERROR]', err.message);
   }
 }
-EOF
 

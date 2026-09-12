@@ -1,3 +1,5 @@
 .env
 node_modules/
-auth_info/
+auth_info_baileys/
+bot_state.json
+leads.log

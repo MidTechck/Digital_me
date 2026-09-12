@@ -1,4 +1,3 @@
-cat << 'EOF' > src/handlers/messageHandler.js
 import fs from 'fs';
 import path from 'path';
 import { processManualMessage } from '../engine/learning.js';
@@ -61,5 +60,4 @@ Contact Context:
     console.error('[REPLY ERROR]', err.message);
   }
 }
-EOF
 

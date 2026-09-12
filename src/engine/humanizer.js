@@ -1,4 +1,3 @@
-cat << 'EOF' > src/engine/humanizer.js
 export async function simulateTyping(sock, jid, text) {
   const readDelay = Math.floor(Math.random() * 2000) + 1500;
   await new Promise((r) => setTimeout(r, readDelay));
@@ -10,5 +9,4 @@ export async function simulateTyping(sock, jid, text) {
 
   await sock.sendPresenceUpdate('paused', jid);
 }
-EOF
 

@@ -1,4 +1,3 @@
-cat << 'EOF' > src/engine/brain.js
 import OpenAI from 'openai';
 import dotenv from 'dotenv';
 dotenv.config();
@@ -65,5 +64,4 @@ export async function generatePersonaReply(systemPrompt, userText) {
 
   throw new Error('All configured API keys (Groq, Gemini, NVIDIA) failed or are missing.');
 }
-EOF
 

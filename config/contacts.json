@@ -1,4 +1,2 @@
-cat << 'EOF' > config/contacts.json
 {}
-EOF
 
