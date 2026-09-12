@@ -1,10 +1,8 @@
-cat << 'EOF' > package.json
-{
+echo '{
   "name": "digital-charles",
   "version": "1.0.0",
-  "description": "Digital Charles WhatsApp AI Assistant",
-  "main": "index.js",
   "type": "module",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
@@ -18,6 +16,5 @@ cat << 'EOF' > package.json
     "qrcode": "^1.5.3",
     "ws": "^8.17.0"
   }
-}
-EOF
+}' > package.json
 
