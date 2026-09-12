@@ -248,7 +248,7 @@ ${isAdLead ? 'This is an ad lead – briefly introduce the Starlink options.' : 
             };
 
             const res = await fetch(
-                `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+                `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`,
                 {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -275,7 +275,7 @@ ${isAdLead ? 'This is an ad lead – briefly introduce the Starlink options.' : 
                     'Authorization': `Bearer ${NVIDIA_API_KEY}`
                 },
                 body: JSON.stringify({
-                    model: 'meta/llama-3.1-8b-instruct',
+                    model: 'meta/llama-3.3-70b-instruct',
                     messages: [{ role: 'system', content: systemPrompt }, ...recent],
                     max_tokens: 120,
                     temperature: 0.5
