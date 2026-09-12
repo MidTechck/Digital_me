@@ -1,2 +1,4 @@
-echo "web: node index.js" > Procfile
+cat << 'EOF' > Procfile
+web: node index.js
+EOF
 

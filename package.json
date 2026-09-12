@@ -1,4 +1,5 @@
-echo '{
+cat << 'EOF' > package.json
+{
   "name": "digital-charles",
   "version": "1.0.0",
   "type": "module",
@@ -16,5 +17,6 @@ echo '{
     "qrcode": "^1.5.3",
     "ws": "^8.17.0"
   }
-}' > package.json
+}
+EOF
 
