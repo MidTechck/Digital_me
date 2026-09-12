@@ -1,3 +1,5 @@
+cd ~/digital-charles
+
 cat << 'EOF' > package.json
 {
   "name": "digital-charles",
@@ -17,4 +19,9 @@ cat << 'EOF' > package.json
   }
 }
 EOF
-npm install
+
+git add package.json
+git commit -m "Fix package.json formatting"
+git push origin main
+
+
