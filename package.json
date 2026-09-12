@@ -1,0 +1,20 @@
+cat << 'EOF' > package.json
+{
+  "name": "digital-charles",
+  "version": "1.0.0",
+  "description": "AI WhatsApp Persona and Digital Twin for Charles",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.0",
+    "dotenv": "^16.4.5",
+    "openai": "^4.50.0",
+    "pino": "^9.0.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
+EOF
+npm install
