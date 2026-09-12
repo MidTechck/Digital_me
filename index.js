@@ -259,6 +259,7 @@ ${isAdLead ? 'This is an ad lead – briefly introduce the Starlink options.' : 
             if (res.ok && data?.candidates?.[0]?.content?.parts?.[0]?.text) {
                 return data.candidates[0].content.parts[0].text.trim();
             }
+            console.log('[GEMINI] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 500));
         } catch (e) {
             console.log('[GEMINI]', e.message);
         }
@@ -284,12 +285,14 @@ ${isAdLead ? 'This is an ad lead – briefly introduce the Starlink options.' : 
             if (res.ok && data?.choices?.[0]?.message?.content) {
                 return data.choices[0].message.content.trim();
             }
+            console.log('[NVIDIA] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 500));
         } catch (e) {
             console.log('[NVIDIA]', e.message);
         }
     }
 
     // Simple fallback
+    console.log('[AI] both providers unavailable/failed, using local fallback. GEMINI_API_KEY set=' + !!GEMINI_API_KEY + ', NVIDIA_API_KEY set=' + !!NVIDIA_API_KEY);
     const lower = userMessage.toLowerCase();
     if (isAdLead || lower.includes('starlink')) {
         return 'We have Starlink Gen 3 at K8,500 and Mini at K6,500. Which one are you interested in.';
