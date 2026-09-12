@@ -1,6 +1,3 @@
-cd ~/digital-charles
-
-cat << 'EOF' > package.json
 {
   "name": "digital-charles",
   "version": "1.0.0",
@@ -18,10 +15,4 @@ cat << 'EOF' > package.json
     "qrcode-terminal": "^0.12.0"
   }
 }
-EOF
-
-git add package.json
-git commit -m "Fix package.json formatting"
-git push origin main
-
 
