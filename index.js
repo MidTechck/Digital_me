@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, Browsers, downloadMediaMessage } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
 const express = require('express');
@@ -54,6 +54,14 @@ const botMessageIds = new Set();
 const lastLeadAlert = new Map();
 const LEAD_ALERT_COOLDOWN = 20 * 60 * 1000;
 
+// ====== VOICE / STYLE LEARNING ======
+let styleProfile = '';               // short summary of how Charles actually texts, learned over time
+let humanSamples = [];               // recent messages Charles typed himself, used to build styleProfile
+const STYLE_SAMPLE_CAP = 60;
+const STYLE_UPDATE_EVERY = 6;        // re-learn style every N new messages Charles sends
+let sinceLastStyleUpdate = 0;
+const RELATIONSHIP_TYPES = ['friend', 'family', 'client', 'lead', 'unknown'];
+
 function getCleanNumber(jid) {
     if (!jid) return null;
     return jid.split('@')[0].replace(/\D/g, '');
@@ -70,6 +78,7 @@ function getOrCreateCustomer(phone) {
                 status: 'new',
                 notes: '',
                 lastSummary: '',
+                relationship: null,        // 'friend' | 'family' | 'client' | 'lead' | 'unknown'
                 updatedAt: new Date().toISOString()
             },
             history: []
@@ -128,6 +137,8 @@ function loadState() {
                 manualMutes.set(k, v);
             }
         }
+        if (typeof parsed.styleProfile === 'string') styleProfile = parsed.styleProfile;
+        if (Array.isArray(parsed.humanSamples)) humanSamples = parsed.humanSamples;
         console.log(`Restored ${customers.size} customers`);
     } catch (e) {
         console.log('No previous state, starting fresh');
@@ -138,7 +149,9 @@ function saveState() {
     try {
         const data = {
             customers: Object.fromEntries(customers),
-            manualMutes: Object.fromEntries(manualMutes)
+            manualMutes: Object.fromEntries(manualMutes),
+            styleProfile,
+            humanSamples
         };
         fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2));
     } catch (e) {
@@ -186,6 +199,160 @@ async function checkBuyingIntent(sock, sender, text, isMuted, isAdLead = false) 
     } catch (e) {}
 }
 
+const PRICING_RULES = `- Before giving installation price you must know the city.
+- Pricing:
+  Lusaka / Eastern: K1,500 service + K2,000 mount if needed
+  Kitwe / Copperbelt: K2,000 installation
+  Other areas: special arrangement needed
+- Packages: Gen 3 Kit K8,500 | Mini K6,500 | Mount K2,000 | Monthly K800
+- Payment: Airtel Money or bank transfer only.`;
+
+// Figure out how Charles should sound for this specific contact, and build the
+// persona + learned-style text shared by both the text and voice-note paths.
+function buildPersonaAndStyle(phone, isAdLead) {
+    const customer = getOrCreateCustomer(phone);
+    const relationship = customer.memory.relationship;
+
+    let personaBlock;
+    if (isAdLead || relationship === 'client' || relationship === 'lead') {
+        personaBlock = `You are a professional representative of Sovet Link Technologies (Zambia), replying to a customer on Charles's behalf.
+Keep replies short (1-2 sentences maximum), calm and professional.`;
+    } else if (relationship === 'friend' || relationship === 'family') {
+        personaBlock = `You are Charles, personally replying to a ${relationship} of his on WhatsApp.
+Keep it short, casual and warm - the way Charles actually texts people he knows. This is not a business conversation, so do not bring up Starlink pricing or business talk unless they ask about it directly.`;
+    } else {
+        personaBlock = `You are Charles, replying on WhatsApp to someone whose relationship to him isn't clear yet.
+Keep it short, friendly and neutral in tone until you know them better. Only bring up Starlink/business pricing if they ask about it.`;
+    }
+
+    const styleBlock = styleProfile
+        ? `\nHOW CHARLES ACTUALLY TEXTS (match this voice):\n${styleProfile}\n`
+        : '';
+
+    const pricingBlock = (isAdLead || relationship === 'client' || relationship === 'lead')
+        ? `\n${PRICING_RULES}\n`
+        : '';
+
+    return `${personaBlock}
+${styleBlock}
+GENERAL RULES:
+- Never use exclamation marks.
+- Understand common chat shorthand (hru, wyd, wbu, brb, idk, lol, etc.) and emojis the way a real person would.
+- Pick up on emotional tone (upset, joking, stressed, excited) and respond appropriately - don't ignore it.
+- If a message is genuinely unclear or hard to make out, ask the person to repeat it or type it out instead of guessing.
+- If someone sincerely and directly asks whether they're talking to an AI/bot, or asks "is this really you", answer honestly - never deny it.
+- Never invent prices, links, quotations or facts that aren't in memory or the recent messages.
+${pricingBlock}${isAdLead ? '\nThis is an ad lead - briefly introduce the Starlink options.' : ''}`;
+}
+
+// Classify a contact as friend/family/client/lead based on the conversation so far.
+// Runs in the background - never awaited on the critical reply path.
+async function classifyRelationship(phone) {
+    if (!GEMINI_API_KEY) return;
+    const customer = getOrCreateCustomer(phone);
+    if (customer.history.length < 4) return;
+    if (customer.memory.relationship && customer.history.length % 6 !== 0) return;
+
+    try {
+        const convoText = customer.history.slice(-10)
+            .map(h => `${h.role === 'assistant' ? 'Charles' : 'Them'}: ${h.content}`)
+            .join('\n');
+        const prompt = `Based on this WhatsApp conversation, classify who "Them" is to Charles as exactly one of: friend, family, client, lead, unknown.
+Reply with only that one lowercase word, nothing else.
+
+${convoText}`;
+
+        const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
+            }
+        );
+        const data = await res.json();
+        const word = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim().toLowerCase().replace(/[^a-z]/g, '');
+        if (RELATIONSHIP_TYPES.includes(word)) {
+            customer.memory.relationship = word;
+            saveState();
+        }
+    } catch (e) {
+        console.log('[CLASSIFY]', e.message);
+    }
+}
+
+// Re-learn Charles's own texting voice from his most recent sent messages.
+// Runs in the background - never awaited on the critical reply path.
+async function updateStyleProfile() {
+    if (!GEMINI_API_KEY || humanSamples.length < 6) return;
+    try {
+        const sampleText = humanSamples.slice(-STYLE_SAMPLE_CAP).join('\n');
+        const prompt = `These are real WhatsApp messages a person named Charles typed himself.
+In 3 short bullet points (under 60 words total), describe his texting voice: tone, typical phrasing/slang, punctuation and capitalization habits, emoji use. This will guide an assistant writing replies in his voice, so be concrete, not generic.
+
+${sampleText}`;
+
+        const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
+            }
+        );
+        const data = await res.json();
+        const summary = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+        if (summary) {
+            styleProfile = summary;
+            saveState();
+            console.log('[STYLE] profile updated');
+        }
+    } catch (e) {
+        console.log('[STYLE]', e.message);
+    }
+}
+
+// Download a voice note and let Gemini transcribe + reply to it in one pass.
+// Returns the reply text, or null if it couldn't make sense of the audio.
+async function transcribeAndRespond(sock, msg, phone, isAdLead) {
+    if (!GEMINI_API_KEY) return null;
+    try {
+        const buffer = await downloadMediaMessage(
+            msg, 'buffer', {},
+            { reuploadRequest: sock.updateMediaMessage, logger: pino({ level: 'silent' }) }
+        );
+        const base64Audio = buffer.toString('base64');
+        const systemPrompt = buildPersonaAndStyle(phone, isAdLead);
+
+        const payload = {
+            system_instruction: {
+                parts: [{ text: systemPrompt + '\nThe person sent a voice note instead of typing. Listen to it and reply naturally to what they said, as if you heard it directly. If you cannot make out what they said, say so and ask them to repeat it or type it out.' }]
+            },
+            contents: [{
+                role: 'user',
+                parts: [{ inline_data: { mime_type: 'audio/ogg', data: base64Audio } }]
+            }]
+        };
+
+        const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            }
+        );
+        const data = await res.json();
+        if (res.ok && data?.candidates?.[0]?.content?.parts?.[0]?.text) {
+            return data.candidates[0].content.parts[0].text.trim();
+        }
+        console.log('[VOICE] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 500));
+    } catch (e) {
+        console.log('[VOICE]', e.message);
+    }
+    return null;
+}
+
 // ====== AI ======
 async function generateAIResponse(phone, userMessage, isAdLead = false) {
     const customer = getOrCreateCustomer(phone);
@@ -215,26 +382,11 @@ async function generateAIResponse(phone, userMessage, isAdLead = false) {
         memoryBlock += 'No previous information stored yet.\n';
     }
 
-    const systemPrompt = `You are a professional human representative of Sovet Link Technologies (Zambia).
-Keep replies short (1-2 sentences maximum).
+    const systemPrompt = `${buildPersonaAndStyle(phone, isAdLead)}
 
 ${memoryBlock}
-
-STRICT RULES:
-- Never use emojis or exclamation marks.
-- Never invent prices, links, or past conversations.
-- If the customer refers to a previous discussion, quotation, installation or anything that is NOT in the Customer Memory and NOT in the recent messages, reply exactly:
-  "Let me connect you with the team so they can assist you properly."
-- Before giving installation price you must know the city.
-- Pricing:
-  Lusaka / Eastern: K1,500 service + K2,000 mount if needed
-  Kitwe / Copperbelt: K2,000 installation
-  Other areas: special arrangement needed
-- Packages: Gen 3 Kit K8,500 | Mini K6,500 | Mount K2,000 | Monthly K800
-- Payment: Airtel Money or bank transfer only.
-- Match a calm, professional tone.
-
-${isAdLead ? 'This is an ad lead – briefly introduce the Starlink options.' : ''}`;
+If the other person refers to a previous discussion, quotation, installation or anything that is NOT in the memory above and NOT in the recent messages, reply exactly:
+"Let me connect you with the team so they can assist you properly."`;
 
     // Gemini
     if (GEMINI_API_KEY) {
@@ -396,6 +548,18 @@ async function startBot() {
             if (text) {
                 addToHistory(phone, 'assistant', text, true);   // SAVE human message
                 manualMutes.set(sender, Date.now());
+
+                // Learn Charles's own texting voice from what he actually typed
+                humanSamples.push(text);
+                if (humanSamples.length > STYLE_SAMPLE_CAP) {
+                    humanSamples.splice(0, humanSamples.length - STYLE_SAMPLE_CAP);
+                }
+                sinceLastStyleUpdate++;
+                if (sinceLastStyleUpdate >= STYLE_UPDATE_EVERY) {
+                    sinceLastStyleUpdate = 0;
+                    updateStyleProfile().catch(() => {});
+                }
+
                 saveState();
                 console.log(`Human message saved for ${phone}`);
             }
@@ -403,6 +567,35 @@ async function startBot() {
         }
 
         // ========== CUSTOMER MESSAGE ==========
+        const isMutedNow = Date.now() - (manualMutes.get(sender) || 0) < MUTE_DURATION;
+
+        // Voice note - no transcript from Baileys, so hand the audio straight to Gemini
+        if (!text && msg.message.audioMessage) {
+            if (isMutedNow) return;
+            try { await sock.readMessages([msg.key]); } catch (e) {}
+            await sock.sendPresenceUpdate('composing', sender);
+
+            const voiceReply = await transcribeAndRespond(sock, msg, phone, false);
+            addToHistory(phone, 'user', '[voice note]', false);
+
+            if (voiceReply) {
+                const clean = sanitizeReply(voiceReply);
+                addToHistory(phone, 'assistant', clean, false);
+                saveState();
+                await new Promise(r => setTimeout(r, Math.min(Math.max(clean.length * 18, 1200), 3200)));
+                await sock.sendPresenceUpdate('paused', sender);
+                await sendTrackedMessage(sock, sender, { text: clean });
+            } else {
+                const fallback = 'Sorry, I did not catch that clearly. Could you say it again or type it out.';
+                addToHistory(phone, 'assistant', fallback, false);
+                saveState();
+                await sock.sendPresenceUpdate('paused', sender);
+                await sendTrackedMessage(sock, sender, { text: fallback });
+            }
+            classifyRelationship(phone).catch(() => {});
+            return;
+        }
+
         if (!text) return;
 
         try { await sock.readMessages([msg.key]); } catch (e) {}
@@ -463,6 +656,8 @@ async function startBot() {
 
         console.log(`From ${phone}: ${text}`);
 
+        // Brief "reading" pause before even showing typing - feels more natural than an instant reply
+        await new Promise(r => setTimeout(r, Math.min(Math.max(text.length * 15, 400), 2500)));
         await sock.sendPresenceUpdate('composing', sender);
 
         const raw = await generateAIResponse(phone, text, isAdLead);
@@ -475,6 +670,7 @@ async function startBot() {
 
         addToHistory(phone, 'assistant', reply, false);
         saveState();
+        classifyRelationship(phone).catch(() => {});
 
         await new Promise(r => setTimeout(r, Math.min(Math.max(reply.length * 18, 1200), 3200)));
         await sock.sendPresenceUpdate('paused', sender);
