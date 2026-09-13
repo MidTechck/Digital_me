@@ -124,8 +124,19 @@ function sanitizeReply(text) {
 
 // ====== LOAD / SAVE ======
 function loadState() {
+    let raw;
     try {
-        const raw = fs.readFileSync(STATE_FILE, 'utf8');
+        raw = fs.readFileSync(STATE_FILE, 'utf8');
+    } catch (e) {
+        try {
+            raw = fs.readFileSync(path.join(__dirname, 'seed_state.json'), 'utf8');
+            console.log('No saved state yet - loading seed contacts');
+        } catch (e2) {
+            console.log('No previous state, starting fresh');
+            return;
+        }
+    }
+    try {
         const parsed = JSON.parse(raw);
         if (parsed.customers) {
             for (const [phone, data] of Object.entries(parsed.customers)) {
@@ -141,7 +152,7 @@ function loadState() {
         if (Array.isArray(parsed.humanSamples)) humanSamples = parsed.humanSamples;
         console.log(`Restored ${customers.size} customers`);
     } catch (e) {
-        console.log('No previous state, starting fresh');
+        console.log('Failed to parse saved state:', e.message);
     }
 }
 
@@ -167,23 +178,15 @@ const BUYING_INTENT_KEYWORDS = [
     'buy', 'purchase', 'interested', 'install', 'schedule', 'appointment', 'deposit', 'pay'
 ];
 
-const AD_LEAD_GREETING = `Hi. Thanks for your interest in Starlink.
-
-Current offer:
-Starlink Kit: K8,500
-Original Mount: K2,000
-Monthly Unlimited: K800
-Installation: K1,500 within Lusaka & Copperbelt`;
-
 function logLead(sender, text) {
     try {
         fs.appendFileSync(LEADS_FILE, `${new Date().toISOString()} | ${getCleanNumber(sender)} | ${text}\n`);
     } catch (e) {}
 }
 
-async function checkBuyingIntent(sock, sender, text, isMuted, isAdLead = false) {
+async function checkBuyingIntent(sock, sender, text, isMuted) {
     const lower = text.toLowerCase();
-    if (!BUYING_INTENT_KEYWORDS.some(k => lower.includes(k)) && !isAdLead) return;
+    if (!BUYING_INTENT_KEYWORDS.some(k => lower.includes(k))) return;
 
     logLead(sender, text);
     if (isMuted || !OWNER_NOTIFY_NUMBER) return;
@@ -194,55 +197,52 @@ async function checkBuyingIntent(sock, sender, text, isMuted, isAdLead = false) 
 
     try {
         await sendTrackedMessage(sock, OWNER_NOTIFY_NUMBER, {
-            text: `New potential sale\nClient: ${getCleanNumber(sender)}\nMessage: ${text}`
+            text: `Possible business enquiry\nFrom: ${getCleanNumber(sender)}\nMessage: ${text}`
         });
     } catch (e) {}
 }
 
-const PRICING_RULES = `- Before giving installation price you must know the city.
-- Pricing:
-  Lusaka / Eastern: K1,500 service + K2,000 mount if needed
-  Kitwe / Copperbelt: K2,000 installation
-  Other areas: special arrangement needed
-- Packages: Gen 3 Kit K8,500 | Mini K6,500 | Mount K2,000 | Monthly K800
-- Payment: Airtel Money or bank transfer only.`;
+const PERSONAL_FACTS = `- Runs an online business, MidTech Digital: builds websites, WhatsApp automation/chatbots, SEO, and Google Business Profiles for small businesses
+- Based in Ndola, Zambia
+- Into coding
+Share these ONLY if someone directly asks about them. Never volunteer them unprompted, and never list off skills or brag about capabilities. If asked something more personal than this (age, school, relationships, etc.), keep it light and vague rather than specific.`;
 
 // Figure out how Charles should sound for this specific contact, and build the
 // persona + learned-style text shared by both the text and voice-note paths.
-function buildPersonaAndStyle(phone, isAdLead) {
+function buildPersonaAndStyle(phone) {
     const customer = getOrCreateCustomer(phone);
     const relationship = customer.memory.relationship;
 
     let personaBlock;
-    if (isAdLead || relationship === 'client' || relationship === 'lead') {
-        personaBlock = `You are a professional representative of Sovet Link Technologies (Zambia), replying to a customer on Charles's behalf.
-Keep replies short (1-2 sentences maximum), calm and professional.`;
+    if (relationship === 'client' || relationship === 'lead') {
+        personaBlock = `You are Charles, replying to a client/business contact on WhatsApp about MidTech Digital work (websites, WhatsApp automation, SEO, Google Business Profiles).
+Keep replies short (1-2 sentences), calm and professional. Only talk about specifics (prices, timelines, scope) that are in this contact's notes below or in the recent messages - never invent project details.`;
     } else if (relationship === 'friend' || relationship === 'family') {
         personaBlock = `You are Charles, personally replying to a ${relationship} of his on WhatsApp.
-Keep it short, casual and warm - the way Charles actually texts people he knows. This is not a business conversation, so do not bring up Starlink pricing or business talk unless they ask about it directly.`;
+Keep it short, casual and warm - the way Charles actually texts people he knows. This is not a business conversation, so don't bring up work/business unless they ask about it directly.`;
     } else {
         personaBlock = `You are Charles, replying on WhatsApp to someone whose relationship to him isn't clear yet.
-Keep it short, friendly and neutral in tone until you know them better. Only bring up Starlink/business pricing if they ask about it.`;
+Keep it short, friendly and neutral in tone until you know them better. Don't bring up business/work unless they ask about it.`;
     }
 
     const styleBlock = styleProfile
         ? `\nHOW CHARLES ACTUALLY TEXTS (match this voice):\n${styleProfile}\n`
         : '';
 
-    const pricingBlock = (isAdLead || relationship === 'client' || relationship === 'lead')
-        ? `\n${PRICING_RULES}\n`
-        : '';
-
     return `${personaBlock}
 ${styleBlock}
+ABOUT CHARLES:
+${PERSONAL_FACTS}
+
 GENERAL RULES:
 - Never use exclamation marks.
 - Understand common chat shorthand (hru, wyd, wbu, brb, idk, lol, etc.) and emojis the way a real person would.
 - Pick up on emotional tone (upset, joking, stressed, excited) and respond appropriately - don't ignore it.
+- If someone just greets you ("hi", "hey", "how are you", "hru"), reply casually like a real person would ("hey, I'm good, you?"), never like a business assistant ("how can I help you today").
 - If a message is genuinely unclear or hard to make out, ask the person to repeat it or type it out instead of guessing.
 - If someone sincerely and directly asks whether they're talking to an AI/bot, or asks "is this really you", answer honestly - never deny it.
 - Never invent prices, links, quotations or facts that aren't in memory or the recent messages.
-${pricingBlock}${isAdLead ? '\nThis is an ad lead - briefly introduce the Starlink options.' : ''}`;
+- If someone brings up something not in your notes or the recent messages (a past chat, a quote, a plan), don't use a scripted line - just say naturally that you forgot or can't quite recall, and vary the phrasing each time so it doesn't sound scripted.`;
 }
 
 // Classify a contact as friend/family/client/lead based on the conversation so far.
@@ -314,7 +314,7 @@ ${sampleText}`;
 
 // Download a voice note and let Gemini transcribe + reply to it in one pass.
 // Returns the reply text, or null if it couldn't make sense of the audio.
-async function transcribeAndRespond(sock, msg, phone, isAdLead) {
+async function transcribeAndRespond(sock, msg, phone) {
     if (!GEMINI_API_KEY) return null;
     try {
         const buffer = await downloadMediaMessage(
@@ -322,7 +322,7 @@ async function transcribeAndRespond(sock, msg, phone, isAdLead) {
             { reuploadRequest: sock.updateMediaMessage, logger: pino({ level: 'silent' }) }
         );
         const base64Audio = buffer.toString('base64');
-        const systemPrompt = buildPersonaAndStyle(phone, isAdLead);
+        const systemPrompt = buildPersonaAndStyle(phone);
 
         const payload = {
             system_instruction: {
@@ -354,7 +354,7 @@ async function transcribeAndRespond(sock, msg, phone, isAdLead) {
 }
 
 // ====== AI ======
-async function generateAIResponse(phone, userMessage, isAdLead = false) {
+async function generateAIResponse(phone, userMessage) {
     const customer = getOrCreateCustomer(phone);
     const memory = customer.memory;
 
@@ -370,23 +370,21 @@ async function generateAIResponse(phone, userMessage, isAdLead = false) {
     }
 
     // Build memory block
-    let memoryBlock = 'CUSTOMER MEMORY:\n';
+    let memoryBlock = 'NOTES ON THIS CONTACT:\n';
     if (memory.name) memoryBlock += `Name: ${memory.name}\n`;
     if (memory.location) memoryBlock += `Location: ${memory.location}\n`;
-    if (memory.service) memoryBlock += `Service: ${memory.service}\n`;
+    if (memory.service) memoryBlock += `Service/project: ${memory.service}\n`;
     if (memory.quotation) memoryBlock += `Quotation: ${memory.quotation}\n`;
     if (memory.status) memoryBlock += `Status: ${memory.status}\n`;
     if (memory.notes) memoryBlock += `Notes: ${memory.notes}\n`;
     if (memory.lastSummary) memoryBlock += `Last summary: ${memory.lastSummary}\n`;
-    if (memoryBlock === 'CUSTOMER MEMORY:\n') {
-        memoryBlock += 'No previous information stored yet.\n';
+    if (memoryBlock === 'NOTES ON THIS CONTACT:\n') {
+        memoryBlock += 'Nothing saved yet - this may be a new or unfamiliar contact.\n';
     }
 
-    const systemPrompt = `${buildPersonaAndStyle(phone, isAdLead)}
+    const systemPrompt = `${buildPersonaAndStyle(phone)}
 
-${memoryBlock}
-If the other person refers to a previous discussion, quotation, installation or anything that is NOT in the memory above and NOT in the recent messages, reply exactly:
-"Let me connect you with the team so they can assist you properly."`;
+${memoryBlock}`;
 
     // Gemini
     if (GEMINI_API_KEY) {
@@ -427,7 +425,7 @@ If the other person refers to a previous discussion, quotation, installation or 
                     'Authorization': `Bearer ${NVIDIA_API_KEY}`
                 },
                 body: JSON.stringify({
-                    model: 'meta/llama-3.3-70b-instruct',
+                    model: 'openai/gpt-oss-120b',
                     messages: [{ role: 'system', content: systemPrompt }, ...recent],
                     max_tokens: 120,
                     temperature: 0.5
@@ -443,16 +441,9 @@ If the other person refers to a previous discussion, quotation, installation or 
         }
     }
 
-    // Simple fallback
+    // Simple fallback - both providers unavailable
     console.log('[AI] both providers unavailable/failed, using local fallback. GEMINI_API_KEY set=' + !!GEMINI_API_KEY + ', NVIDIA_API_KEY set=' + !!NVIDIA_API_KEY);
-    const lower = userMessage.toLowerCase();
-    if (isAdLead || lower.includes('starlink')) {
-        return 'We have Starlink Gen 3 at K8,500 and Mini at K6,500. Which one are you interested in.';
-    }
-    if (lower.includes('price') || lower.includes('cost') || lower.includes('how much')) {
-        return 'Pricing depends on your location. Which city are you in.';
-    }
-    return 'Hello. How can we help you today.';
+    return 'Hey, I am good, what is up.';
 }
 
 // ====== BOT ======
@@ -484,7 +475,7 @@ async function startBot() {
         for (const msg of messages) {
             try {
                 const jid = msg.key?.remoteJid;
-                if (!jid || jid.endsWith('@g.us')) continue;
+                if (!jid || !jid.endsWith('@s.whatsapp.net')) continue;
 
                 const phone = getCleanNumber(jid);
                 if (!phone) continue;
@@ -532,7 +523,7 @@ async function startBot() {
         if (!msg.message) return;
 
         const sender = msg.key.remoteJid;
-        if (!sender || sender.endsWith('@g.us')) return;
+        if (!sender || !sender.endsWith('@s.whatsapp.net')) return;
 
         const phone = getCleanNumber(sender);
         if (!phone) return;
@@ -575,7 +566,7 @@ async function startBot() {
             try { await sock.readMessages([msg.key]); } catch (e) {}
             await sock.sendPresenceUpdate('composing', sender);
 
-            const voiceReply = await transcribeAndRespond(sock, msg, phone, false);
+            const voiceReply = await transcribeAndRespond(sock, msg, phone);
             addToHistory(phone, 'user', '[voice note]', false);
 
             if (voiceReply) {
@@ -628,14 +619,9 @@ async function startBot() {
             return;
         }
 
-        // Ad detection
-        const ctx = msg.message?.extendedTextMessage?.contextInfo || msg.message?.imageMessage?.contextInfo;
-        const isAdLead = !!(ctx?.externalAdReply || ctx?.adReplyInfo) ||
-                         lower.includes('can i get more info on this');
-
         const isMuted = Date.now() - (manualMutes.get(sender) || 0) < MUTE_DURATION;
 
-        await checkBuyingIntent(sock, sender, text, isMuted, isAdLead);
+        await checkBuyingIntent(sock, sender, text, isMuted);
         if (isMuted) return;
 
         if (lower.includes('owner') || lower.includes('human') || lower.includes('talk to someone')) {
@@ -645,28 +631,14 @@ async function startBot() {
             return;
         }
 
-        if (lower.includes('can i get more info on this')) {
-            await sock.sendPresenceUpdate('composing', sender);
-            await new Promise(r => setTimeout(r, 1800));
-            await sendTrackedMessage(sock, sender, { text: AD_LEAD_GREETING });
-            addToHistory(phone, 'assistant', AD_LEAD_GREETING, false);
-            saveState();
-            return;
-        }
-
         console.log(`From ${phone}: ${text}`);
 
         // Brief "reading" pause before even showing typing - feels more natural than an instant reply
         await new Promise(r => setTimeout(r, Math.min(Math.max(text.length * 15, 400), 2500)));
         await sock.sendPresenceUpdate('composing', sender);
 
-        const raw = await generateAIResponse(phone, text, isAdLead);
+        const raw = await generateAIResponse(phone, text);
         const reply = sanitizeReply(raw);
-
-        // Auto-mute if AI decided to hand over
-        if (reply.toLowerCase().includes('connect you with the team')) {
-            manualMutes.set(sender, Date.now());
-        }
 
         addToHistory(phone, 'assistant', reply, false);
         saveState();
