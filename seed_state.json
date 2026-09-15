@@ -6,18 +6,23 @@
         "location": null,
         "service": "WhatsApp AI automation system Charles is building for them",
         "quotation": null,
-        "status": "awaiting AI retest, customer info gathering, and payment",
+        "status": "Sovet Link apologized for a delay and agreed to finish everything (customer info + payment) by 9am Sep 15",
         "notes": "Client - IT company (network setup, cybersecurity, software development, cloud services, IT support). Charles is building them a WhatsApp AI/automation system. They are waiting on Charles to: gather customer questions/info to help improve the AI, reconnect the AI so they can retest it, and settle payment.",
         "lastSummary": "",
         "relationship": "client",
-        "updatedAt": "2026-09-12T23:36:00.000Z"
+        "updatedAt": "2026-09-15T09:04:00.000Z"
       },
       "history": [
         { "role": "assistant", "content": "Good morning", "isHuman": true, "timestamp": "2026-09-09T08:43:00.000Z" },
         { "role": "user", "content": "Good morning. When you're ready, please try connecting the AI again so we can test it properly and see what still needs improvement. I'd like us to finish the WhatsApp automation first, then we can look at the other things", "isHuman": false, "timestamp": "2026-09-10T08:28:00.000Z" },
         { "role": "user", "content": "Good evening. Just checking in on what we discussed earlier. Have you managed to gather the customer questions and information you mentioned?", "isHuman": false, "timestamp": "2026-09-10T18:12:00.000Z" },
         { "role": "assistant", "content": "Good evening", "isHuman": true, "timestamp": "2026-09-11T22:04:00.000Z" },
-        { "role": "user", "content": "Hi, I wanted to check on the payment and the information you were going to send for improving the AI. When do you expect we can sort those out?", "isHuman": false, "timestamp": "2026-09-12T01:36:00.000Z" }
+        { "role": "user", "content": "Hi, I wanted to check on the payment and the information you were going to send for improving the AI. When do you expect we can sort those out?", "isHuman": false, "timestamp": "2026-09-12T01:36:00.000Z" },
+        { "role": "assistant", "content": "Good evening", "isHuman": true, "timestamp": "2026-09-14T18:22:00.000Z" },
+        { "role": "assistant", "content": "I tried calling earlier regarding the information for the AI and the payment we discussed", "isHuman": true, "timestamp": "2026-09-14T18:23:00.000Z" },
+        { "role": "user", "content": "Hello sorry for the delay, it wasn't intentional, let's finish everything by tomorrow 9 hrs", "isHuman": false, "timestamp": "2026-09-14T19:20:00.000Z" },
+        { "role": "assistant", "content": "Okay 9hrs", "isHuman": true, "timestamp": "2026-09-14T19:34:00.000Z" },
+        { "role": "assistant", "content": "Good morning", "isHuman": true, "timestamp": "2026-09-15T09:04:00.000Z" }
       ]
     },
     "260771926897": {
@@ -26,15 +31,13 @@
         "location": null,
         "service": "Website build + WhatsApp Business Meta verification",
         "quotation": null,
-        "status": "website ready pending domain connection; Meta WhatsApp Business verification scheduled for Monday evening",
-        "notes": "Client - Spentech (solar/battery installation and electrical services technicians). Charles built their website (ready, only needs the domain connected) and is helping them verify their WhatsApp Business account with Meta, which has been failing for about a month. Agreed to work on it Monday evening. Still need to clarify exactly what they need the Meta verification for.",
+        "status": "Meta verification rescheduled to Sep 15 evening (missed the original Monday slot)",
+        "notes": "Client - Spentech (solar/battery installation and electrical services technicians). Charles built their website (ready, only needs the domain connected). Helping them verify their WhatsApp Business account with Meta for business verification purposes - it had been failing for about a month before Charles stepped in. Rescheduled once already after missing the original Monday evening slot.",
         "lastSummary": "",
         "relationship": "client",
-        "updatedAt": "2026-09-13T00:26:00.000Z"
+        "updatedAt": "2026-09-15T05:01:00.000Z"
       },
       "history": [
-        { "role": "assistant", "content": "Hi", "isHuman": true, "timestamp": "2026-09-12T16:20:00.000Z" },
-        { "role": "user", "content": "Yes", "isHuman": false, "timestamp": "2026-09-12T21:23:00.000Z" },
         { "role": "assistant", "content": "Can we start", "isHuman": true, "timestamp": "2026-09-12T21:29:00.000Z" },
         { "role": "assistant", "content": "Are you busy?", "isHuman": true, "timestamp": "2026-09-12T21:49:00.000Z" },
         { "role": "assistant", "content": "No problem. Let's find a proper day when we're both free so we can sort out the Meta issue properly without rushing", "isHuman": true, "timestamp": "2026-09-12T23:09:00.000Z" },
@@ -43,7 +46,10 @@
         { "role": "user", "content": "Monday evening", "isHuman": false, "timestamp": "2026-09-13T00:22:00.000Z" },
         { "role": "assistant", "content": "Okay Monday evening works for me", "isHuman": true, "timestamp": "2026-09-13T00:22:30.000Z" },
         { "role": "user", "content": "Ok", "isHuman": false, "timestamp": "2026-09-13T00:23:00.000Z" },
-        { "role": "assistant", "content": "Also, just so I understand properly before Monday, what exactly are you trying to do with the Meta verification? What do you need it for?", "isHuman": true, "timestamp": "2026-09-13T00:26:00.000Z" }
+        { "role": "assistant", "content": "Also, just so I understand properly before Monday, what exactly are you trying to do with the Meta verification? What do you need it for?", "isHuman": true, "timestamp": "2026-09-13T00:26:00.000Z" },
+        { "role": "user", "content": "Business verification", "isHuman": false, "timestamp": "2026-09-13T15:54:00.000Z" },
+        { "role": "assistant", "content": "Hi sorry I forgot can we do it tomorrow evening", "isHuman": true, "timestamp": "2026-09-14T23:04:00.000Z" },
+        { "role": "user", "content": "Ok", "isHuman": false, "timestamp": "2026-09-15T05:01:00.000Z" }
       ]
     },
     "260769472464": {
@@ -53,24 +59,23 @@
         "service": null,
         "quotation": null,
         "status": "new",
-        "notes": "Friend. Casual, playful conversations - often ends up on coding/AI/tech topics (has discussed the Atlas project, white-hat hacking). Charles calls her 'daughter of man' as a running joke. She likes sending voice notes. Was away for a while recently and came back.",
-        "lastSummary": "",
+        "notes": "Friend. Casual, playful conversations - often drift into coding/AI/tech topics (has discussed the Atlas project, white-hat hacking). Charles calls her 'daughter of man' as a running joke. She likes sending voice notes. Was away for a while recently and came back. The AI briefly misfired and sent her a generic canned reply once (Sep 13) - Charles apologized and disconnected it temporarily; that's been fixed since.",
         "relationship": "friend",
-        "updatedAt": "2026-09-10T23:03:00.000Z"
+        "updatedAt": "2026-09-14T19:53:00.000Z"
       },
       "history": [
-        { "role": "assistant", "content": "Oh I see", "isHuman": true, "timestamp": "2026-09-09T21:41:00.000Z" },
-        { "role": "assistant", "content": "But now you are back like back", "isHuman": true, "timestamp": "2026-09-09T21:45:00.000Z" },
-        { "role": "assistant", "content": "Yh", "isHuman": true, "timestamp": "2026-09-09T21:45:30.000Z" },
-        { "role": "assistant", "content": "Welcome back then", "isHuman": true, "timestamp": "2026-09-09T21:55:00.000Z" },
-        { "role": "assistant", "content": "Welcome welcome welcome", "isHuman": true, "timestamp": "2026-09-09T22:11:00.000Z" },
-        { "role": "assistant", "content": "What is you doing", "isHuman": true, "timestamp": "2026-09-09T22:12:00.000Z" },
-        { "role": "assistant", "content": "What made you that tired daughter of man", "isHuman": true, "timestamp": "2026-09-09T23:05:00.000Z" },
-        { "role": "assistant", "content": "Good morning", "isHuman": true, "timestamp": "2026-09-10T18:16:00.000Z" },
-        { "role": "user", "content": "18 hrs", "isHuman": false, "timestamp": "2026-09-10T19:02:00.000Z" },
-        { "role": "assistant", "content": "What's up", "isHuman": true, "timestamp": "2026-09-10T19:02:30.000Z" },
-        { "role": "assistant", "content": "How are you daughter of man here in china it's morning", "isHuman": true, "timestamp": "2026-09-10T19:11:00.000Z" },
-        { "role": "assistant", "content": "I feel gooood", "isHuman": true, "timestamp": "2026-09-10T23:03:00.000Z" }
+        { "role": "assistant", "content": "Hey, how are you doing?", "isHuman": true, "timestamp": "2026-09-13T12:48:00.000Z" },
+        { "role": "user", "content": "Am okay n u", "isHuman": false, "timestamp": "2026-09-13T12:50:00.000Z" },
+        { "role": "assistant", "content": "Wyd", "isHuman": true, "timestamp": "2026-09-13T14:39:00.000Z" },
+        { "role": "user", "content": "Hi", "isHuman": false, "timestamp": "2026-09-13T21:00:00.000Z" },
+        { "role": "user", "content": "Anyways came to say goodnight", "isHuman": false, "timestamp": "2026-09-13T21:01:00.000Z" },
+        { "role": "assistant", "content": "So early why?", "isHuman": true, "timestamp": "2026-09-13T21:41:00.000Z" },
+        { "role": "assistant", "content": "Sleeping?", "isHuman": true, "timestamp": "2026-09-13T23:04:00.000Z" },
+        { "role": "user", "content": "I did", "isHuman": false, "timestamp": "2026-09-14T13:35:00.000Z" },
+        { "role": "assistant", "content": "Hi good evening", "isHuman": true, "timestamp": "2026-09-14T18:14:00.000Z" },
+        { "role": "user", "content": "Mwaice laka", "isHuman": false, "timestamp": "2026-09-14T19:08:00.000Z" },
+        { "role": "assistant", "content": "Proper", "isHuman": true, "timestamp": "2026-09-14T19:36:00.000Z" },
+        { "role": "assistant", "content": "Hru", "isHuman": true, "timestamp": "2026-09-14T19:53:00.000Z" }
       ]
     }
   },

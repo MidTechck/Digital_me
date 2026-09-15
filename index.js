@@ -61,6 +61,7 @@ const STYLE_SAMPLE_CAP = 60;
 const STYLE_UPDATE_EVERY = 6;        // re-learn style every N new messages Charles sends
 let sinceLastStyleUpdate = 0;
 const RELATIONSHIP_TYPES = ['friend', 'family', 'client', 'lead', 'unknown'];
+const NON_PERSONAL_SUFFIXES = ['@g.us', '@broadcast', '@newsletter'];
 
 function getCleanNumber(jid) {
     if (!jid) return null;
@@ -207,8 +208,10 @@ const PERSONAL_FACTS = `- Runs an online business, MidTech Digital: builds websi
 - Into coding
 Share these ONLY if someone directly asks about them. Never volunteer them unprompted, and never list off skills or brag about capabilities. If asked something more personal than this (age, school, relationships, etc.), keep it light and vague rather than specific.`;
 
+const GREETING_EXAMPLES = `"I'm good, you?" / "Doing great, thanks, you?" / "I'm fine, how about you?" / "Not bad, you?" / "I'm okay, just tired though" / "Good good, you?" / "I'm alright, what about you?" / "Been better honestly, you?" / "Chilling, you?" / "Just woke up, I'm good, you?" / "I'm great, thanks for asking" / "Same as always, you?" / "Doing okay, just busy" / "I'm fine, just thinking about life" / "All good here, you?" / "Not too bad, you?" / "I'm good, was just coding actually" / "Feeling good today, you?" / "I'm alright, just chilling now" / "Doing fine, what's up with you?"`;
+
 // Figure out how Charles should sound for this specific contact, and build the
-// persona + learned-style text shared by both the text and voice-note paths.
+// persona + learned-style text shared by both the text and media-reply paths.
 function buildPersonaAndStyle(phone) {
     const customer = getOrCreateCustomer(phone);
     const relationship = customer.memory.relationship;
@@ -221,8 +224,8 @@ Keep replies short (1-2 sentences), calm and professional. Only talk about speci
         personaBlock = `You are Charles, personally replying to a ${relationship} of his on WhatsApp.
 Keep it short, casual and warm - the way Charles actually texts people he knows. This is not a business conversation, so don't bring up work/business unless they ask about it directly.`;
     } else {
-        personaBlock = `You are Charles, replying on WhatsApp to someone whose relationship to him isn't clear yet.
-Keep it short, friendly and neutral in tone until you know them better. Don't bring up business/work unless they ask about it.`;
+        personaBlock = `You are Charles, replying on WhatsApp to someone whose relationship to him isn't clear yet - maybe a new friend, maybe someone he hasn't texted in a while.
+Keep it short and friendly. Make them feel noticed and welcomed, not brushed off with something generic - respond with real interest, the way Charles would to someone new, not a cold or robotic default. Don't bring up business/work unless they ask about it.`;
     }
 
     const styleBlock = styleProfile
@@ -238,7 +241,9 @@ GENERAL RULES:
 - Never use exclamation marks.
 - Understand common chat shorthand (hru, wyd, wbu, brb, idk, lol, etc.) and emojis the way a real person would.
 - Pick up on emotional tone (upset, joking, stressed, excited) and respond appropriately - don't ignore it.
-- If someone just greets you ("hi", "hey", "how are you", "hru"), reply casually like a real person would ("hey, I'm good, you?"), never like a business assistant ("how can I help you today").
+- If someone just greets you or asks how you are, reply casually like a real person, never like a business assistant ("how can I help you today"). Vary your wording every time so it never sounds scripted or like an AI - draw on a wide range like these: ${GREETING_EXAMPLES}
+- If someone asks what you're doing (wyd/wud), answer briefly and naturally, like "just thinking about life" or "just chilling" or "was coding actually" - vary it, don't repeat the same line.
+- Don't let the conversation go flat after a greeting - the way a real person texting a friend would, naturally ask something back (what they're up to, how their day's going, etc.) to keep it going instead of just answering and stopping.
 - If a message is genuinely unclear or hard to make out, ask the person to repeat it or type it out instead of guessing.
 - If someone sincerely and directly asks whether they're talking to an AI/bot, or asks "is this really you", answer honestly - never deny it.
 - Never invent prices, links, quotations or facts that aren't in memory or the recent messages.
@@ -312,25 +317,27 @@ ${sampleText}`;
     }
 }
 
-// Download a voice note and let Gemini transcribe + reply to it in one pass.
-// Returns the reply text, or null if it couldn't make sense of the audio.
-async function transcribeAndRespond(sock, msg, phone) {
+// Download any media message (voice note, photo, sticker, video/GIF, PDF) and let
+// Gemini look at/listen to it and reply in one pass. Returns the reply text, or
+// null if it couldn't make sense of it.
+async function respondToMedia(sock, msg, phone, mimeType, kindLabel, caption) {
     if (!GEMINI_API_KEY) return null;
     try {
         const buffer = await downloadMediaMessage(
             msg, 'buffer', {},
             { reuploadRequest: sock.updateMediaMessage, logger: pino({ level: 'silent' }) }
         );
-        const base64Audio = buffer.toString('base64');
+        const base64Data = buffer.toString('base64');
         const systemPrompt = buildPersonaAndStyle(phone);
+        const captionNote = caption ? ` They included this with it: "${caption}"` : '';
 
         const payload = {
             system_instruction: {
-                parts: [{ text: systemPrompt + '\nThe person sent a voice note instead of typing. Listen to it and reply naturally to what they said, as if you heard it directly. If you cannot make out what they said, say so and ask them to repeat it or type it out.' }]
+                parts: [{ text: systemPrompt + `\nThe person sent a ${kindLabel} instead of typing.${captionNote} Look at/listen to it and reply naturally, as if you saw/heard it directly. If you cannot make sense of it, say so and ask them to describe it or send it again.` }]
             },
             contents: [{
                 role: 'user',
-                parts: [{ inline_data: { mime_type: 'audio/ogg', data: base64Audio } }]
+                parts: [{ inline_data: { mime_type: mimeType, data: base64Data } }]
             }]
         };
 
@@ -346,9 +353,9 @@ async function transcribeAndRespond(sock, msg, phone) {
         if (res.ok && data?.candidates?.[0]?.content?.parts?.[0]?.text) {
             return data.candidates[0].content.parts[0].text.trim();
         }
-        console.log('[VOICE] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 500));
+        console.log(`[MEDIA:${kindLabel}] no usable reply, status=` + res.status, JSON.stringify(data).slice(0, 500));
     } catch (e) {
-        console.log('[VOICE]', e.message);
+        console.log(`[MEDIA:${kindLabel}]`, e.message);
     }
     return null;
 }
@@ -443,7 +450,8 @@ ${memoryBlock}`;
 
     // Simple fallback - both providers unavailable
     console.log('[AI] both providers unavailable/failed, using local fallback. GEMINI_API_KEY set=' + !!GEMINI_API_KEY + ', NVIDIA_API_KEY set=' + !!NVIDIA_API_KEY);
-    return 'Hey, I am good, what is up.';
+    const fallbackLines = ["Hey, I'm good, what's up.", "I'm okay, you?", "Doing alright, just busy.", "All good here, what's up with you.", "I'm fine, just thinking about life."];
+    return fallbackLines[Math.floor(Math.random() * fallbackLines.length)];
 }
 
 // ====== BOT ======
@@ -475,7 +483,7 @@ async function startBot() {
         for (const msg of messages) {
             try {
                 const jid = msg.key?.remoteJid;
-                if (!jid || !jid.endsWith('@s.whatsapp.net')) continue;
+                if (!jid || NON_PERSONAL_SUFFIXES.some(suf => jid.endsWith(suf))) continue;
 
                 const phone = getCleanNumber(jid);
                 if (!phone) continue;
@@ -523,7 +531,7 @@ async function startBot() {
         if (!msg.message) return;
 
         const sender = msg.key.remoteJid;
-        if (!sender || !sender.endsWith('@s.whatsapp.net')) return;
+        if (!sender || NON_PERSONAL_SUFFIXES.some(suf => sender.endsWith(suf))) return;
 
         const phone = getCleanNumber(sender);
         if (!phone) return;
@@ -560,24 +568,42 @@ async function startBot() {
         // ========== CUSTOMER MESSAGE ==========
         const isMutedNow = Date.now() - (manualMutes.get(sender) || 0) < MUTE_DURATION;
 
-        // Voice note - no transcript from Baileys, so hand the audio straight to Gemini
-        if (!text && msg.message.audioMessage) {
+        // Media messages - no usable transcript from Baileys, so hand the file straight to Gemini
+        const m = msg.message;
+        let mediaMime = null, mediaLabel = null, mediaCaption = '';
+        if (m.audioMessage) {
+            mediaMime = 'audio/ogg'; mediaLabel = 'voice note';
+        } else if (m.stickerMessage) {
+            mediaMime = m.stickerMessage.mimetype || 'image/webp'; mediaLabel = 'sticker';
+        } else if (m.videoMessage) {
+            mediaMime = m.videoMessage.mimetype || 'video/mp4';
+            mediaLabel = m.videoMessage.gifPlayback ? 'GIF' : 'video';
+            mediaCaption = m.videoMessage.caption || '';
+        } else if (m.imageMessage) {
+            mediaMime = m.imageMessage.mimetype || 'image/jpeg'; mediaLabel = 'photo';
+            mediaCaption = m.imageMessage.caption || '';
+        } else if (m.documentMessage && (m.documentMessage.mimetype || '').includes('pdf')) {
+            mediaMime = 'application/pdf'; mediaLabel = 'PDF';
+            mediaCaption = m.documentMessage.caption || '';
+        }
+
+        if (mediaMime) {
             if (isMutedNow) return;
             try { await sock.readMessages([msg.key]); } catch (e) {}
             await sock.sendPresenceUpdate('composing', sender);
 
-            const voiceReply = await transcribeAndRespond(sock, msg, phone);
-            addToHistory(phone, 'user', '[voice note]', false);
+            const mediaReply = await respondToMedia(sock, msg, phone, mediaMime, mediaLabel, mediaCaption);
+            addToHistory(phone, 'user', `[${mediaLabel}${mediaCaption ? ': ' + mediaCaption : ''}]`, false);
 
-            if (voiceReply) {
-                const clean = sanitizeReply(voiceReply);
+            if (mediaReply) {
+                const clean = sanitizeReply(mediaReply);
                 addToHistory(phone, 'assistant', clean, false);
                 saveState();
                 await new Promise(r => setTimeout(r, Math.min(Math.max(clean.length * 18, 1200), 3200)));
                 await sock.sendPresenceUpdate('paused', sender);
                 await sendTrackedMessage(sock, sender, { text: clean });
             } else {
-                const fallback = 'Sorry, I did not catch that clearly. Could you say it again or type it out.';
+                const fallback = `Hmm I could not quite make out that ${mediaLabel}. Could you describe it or send it again.`;
                 addToHistory(phone, 'assistant', fallback, false);
                 saveState();
                 await sock.sendPresenceUpdate('paused', sender);
