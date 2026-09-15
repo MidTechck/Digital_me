@@ -6,23 +6,25 @@
         "location": null,
         "service": "WhatsApp AI automation system Charles is building for them",
         "quotation": null,
-        "status": "Sovet Link apologized for a delay and agreed to finish everything (customer info + payment) by 9am Sep 15",
-        "notes": "Client - IT company (network setup, cybersecurity, software development, cloud services, IT support). Charles is building them a WhatsApp AI/automation system. They are waiting on Charles to: gather customer questions/info to help improve the AI, reconnect the AI so they can retest it, and settle payment.",
+        "status": "Sovet Link said they'd revert back soon about the AI screenshots Charles sent; Charles is waiting",
+        "notes": "Client - IT company (network setup, cybersecurity, software development, cloud services, IT support). Charles is building them a WhatsApp AI/automation system. They are waiting on Charles to: gather customer questions/info to help improve the AI, reconnect the AI so they can retest it, and settle payment. Charles has had some network trouble getting through to them properly.",
         "lastSummary": "",
         "relationship": "client",
-        "updatedAt": "2026-09-15T09:04:00.000Z"
+        "updatedAt": "2026-09-15T10:32:00.000Z"
       },
       "history": [
-        { "role": "assistant", "content": "Good morning", "isHuman": true, "timestamp": "2026-09-09T08:43:00.000Z" },
-        { "role": "user", "content": "Good morning. When you're ready, please try connecting the AI again so we can test it properly and see what still needs improvement. I'd like us to finish the WhatsApp automation first, then we can look at the other things", "isHuman": false, "timestamp": "2026-09-10T08:28:00.000Z" },
-        { "role": "user", "content": "Good evening. Just checking in on what we discussed earlier. Have you managed to gather the customer questions and information you mentioned?", "isHuman": false, "timestamp": "2026-09-10T18:12:00.000Z" },
-        { "role": "assistant", "content": "Good evening", "isHuman": true, "timestamp": "2026-09-11T22:04:00.000Z" },
-        { "role": "user", "content": "Hi, I wanted to check on the payment and the information you were going to send for improving the AI. When do you expect we can sort those out?", "isHuman": false, "timestamp": "2026-09-12T01:36:00.000Z" },
         { "role": "assistant", "content": "Good evening", "isHuman": true, "timestamp": "2026-09-14T18:22:00.000Z" },
         { "role": "assistant", "content": "I tried calling earlier regarding the information for the AI and the payment we discussed", "isHuman": true, "timestamp": "2026-09-14T18:23:00.000Z" },
         { "role": "user", "content": "Hello sorry for the delay, it wasn't intentional, let's finish everything by tomorrow 9 hrs", "isHuman": false, "timestamp": "2026-09-14T19:20:00.000Z" },
         { "role": "assistant", "content": "Okay 9hrs", "isHuman": true, "timestamp": "2026-09-14T19:34:00.000Z" },
-        { "role": "assistant", "content": "Good morning", "isHuman": true, "timestamp": "2026-09-15T09:04:00.000Z" }
+        { "role": "assistant", "content": "Good morning", "isHuman": true, "timestamp": "2026-09-15T09:04:00.000Z" },
+        { "role": "assistant", "content": "My network is bad", "isHuman": true, "timestamp": "2026-09-15T10:15:00.000Z" },
+        { "role": "assistant", "content": "So I can't get you properly", "isHuman": true, "timestamp": "2026-09-15T10:15:30.000Z" },
+        { "role": "user", "content": "I have sent", "isHuman": false, "timestamp": "2026-09-15T10:15:45.000Z" },
+        { "role": "user", "content": "Just check", "isHuman": false, "timestamp": "2026-09-15T10:15:50.000Z" },
+        { "role": "assistant", "content": "Yes I have seen it thanks and what about the screenshots for the ai", "isHuman": true, "timestamp": "2026-09-15T10:16:00.000Z" },
+        { "role": "user", "content": "I will revert back soon", "isHuman": false, "timestamp": "2026-09-15T10:17:00.000Z" },
+        { "role": "assistant", "content": "Okay I will be waiting", "isHuman": true, "timestamp": "2026-09-15T10:32:00.000Z" }
       ]
     },
     "260771926897": {
@@ -76,6 +78,33 @@
         { "role": "user", "content": "Mwaice laka", "isHuman": false, "timestamp": "2026-09-14T19:08:00.000Z" },
         { "role": "assistant", "content": "Proper", "isHuman": true, "timestamp": "2026-09-14T19:36:00.000Z" },
         { "role": "assistant", "content": "Hru", "isHuman": true, "timestamp": "2026-09-14T19:53:00.000Z" }
+      ]
+    },
+    "260968030155": {
+      "memory": {
+        "name": "Gershom",
+        "location": null,
+        "service": null,
+        "quotation": null,
+        "status": "new",
+        "notes": "Friend. Comes over to hang out and play FC26 on PS5 (K8 for two, at a local game station). Casual, informal texting style with local slang ('iwe kolwe' etc). Sometimes asks to borrow small amounts of money, casual between friends.",
+        "lastSummary": "",
+        "relationship": "friend",
+        "updatedAt": "2026-09-10T10:07:00.000Z"
+      },
+      "history": [
+        { "role": "user", "content": "Iwe kolwe", "isHuman": false, "timestamp": "2026-09-10T10:01:00.000Z" },
+        { "role": "user", "content": "I'm coming now now", "isHuman": false, "timestamp": "2026-09-10T10:03:00.000Z" },
+        { "role": "assistant", "content": "Who cares if you are tired", "isHuman": true, "timestamp": "2026-09-10T10:04:00.000Z" },
+        { "role": "user", "content": "No one", "isHuman": false, "timestamp": "2026-09-10T10:04:30.000Z" },
+        { "role": "assistant", "content": "Wait I'm not home I'm in the bedroom so should I go and bath?", "isHuman": true, "timestamp": "2026-09-10T10:04:45.000Z" },
+        { "role": "user", "content": "Where are you", "isHuman": false, "timestamp": "2026-09-10T10:04:50.000Z" },
+        { "role": "assistant", "content": "How working", "isHuman": true, "timestamp": "2026-09-10T10:05:00.000Z" },
+        { "role": "assistant", "content": "Home working", "isHuman": true, "timestamp": "2026-09-10T10:05:10.000Z" },
+        { "role": "user", "content": "Do you have movies in the laptop", "isHuman": false, "timestamp": "2026-09-10T10:05:30.000Z" },
+        { "role": "assistant", "content": "You can come and download", "isHuman": true, "timestamp": "2026-09-10T10:05:45.000Z" },
+        { "role": "user", "content": "Okay I'm coming", "isHuman": false, "timestamp": "2026-09-10T10:07:00.000Z" },
+        { "role": "assistant", "content": "Alright", "isHuman": true, "timestamp": "2026-09-10T10:07:10.000Z" }
       ]
     }
   },

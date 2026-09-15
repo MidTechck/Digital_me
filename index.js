@@ -10,7 +10,7 @@ const crypto = require('crypto');
 
 // ====== ENV ======
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || '';
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const OWNER_NOTIFY_NUMBER = process.env.OWNER_NOTIFY_NUMBER || '';
 const OWNER_DIRECT_LINE = process.env.OWNER_DIRECT_LINE || '';
 
@@ -61,11 +61,17 @@ const STYLE_SAMPLE_CAP = 60;
 const STYLE_UPDATE_EVERY = 6;        // re-learn style every N new messages Charles sends
 let sinceLastStyleUpdate = 0;
 const RELATIONSHIP_TYPES = ['friend', 'family', 'client', 'lead', 'unknown'];
-const NON_PERSONAL_SUFFIXES = ['@g.us', '@broadcast', '@newsletter'];
+const NON_PERSONAL_SUFFIXES = ['@broadcast', '@newsletter'];
+
+// ====== GROUPS ======
+const groups = new Map();             // groupJid → { history: [{label, content, timestamp}] }
+const groupManualMutes = new Map();
+const GROUP_HISTORY_CAP = 20;
+let botOwnNumber = null;              // set once connected, used to detect @mentions/replies to Charles
 
 function getCleanNumber(jid) {
     if (!jid) return null;
-    return jid.split('@')[0].replace(/\D/g, '');
+    return jid.split('@')[0].split(':')[0].replace(/\D/g, '');
 }
 
 function getOrCreateCustomer(phone) {
@@ -151,6 +157,16 @@ function loadState() {
         }
         if (typeof parsed.styleProfile === 'string') styleProfile = parsed.styleProfile;
         if (Array.isArray(parsed.humanSamples)) humanSamples = parsed.humanSamples;
+        if (parsed.groups) {
+            for (const [jid, data] of Object.entries(parsed.groups)) {
+                groups.set(jid, data);
+            }
+        }
+        if (parsed.groupManualMutes) {
+            for (const [k, v] of Object.entries(parsed.groupManualMutes)) {
+                groupManualMutes.set(k, v);
+            }
+        }
         console.log(`Restored ${customers.size} customers`);
     } catch (e) {
         console.log('Failed to parse saved state:', e.message);
@@ -163,7 +179,9 @@ function saveState() {
             customers: Object.fromEntries(customers),
             manualMutes: Object.fromEntries(manualMutes),
             styleProfile,
-            humanSamples
+            humanSamples,
+            groups: Object.fromEntries(groups),
+            groupManualMutes: Object.fromEntries(groupManualMutes)
         };
         fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2));
     } catch (e) {
@@ -201,6 +219,42 @@ async function checkBuyingIntent(sock, sender, text, isMuted) {
             text: `Possible business enquiry\nFrom: ${getCleanNumber(sender)}\nMessage: ${text}`
         });
     } catch (e) {}
+}
+
+async function callGroq(messages, maxTokens = 120) {
+    if (!GROQ_API_KEY) return null;
+    try {
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${GROQ_API_KEY}`
+            },
+            body: JSON.stringify({
+                model: 'llama-3.3-70b-versatile',
+                messages,
+                max_tokens: maxTokens,
+                temperature: 0.5
+            })
+        });
+        const data = await res.json();
+        if (res.ok && data?.choices?.[0]?.message?.content) {
+            return data.choices[0].message.content.trim();
+        }
+        console.log('[GROQ] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 500));
+    } catch (e) {
+        console.log('[GROQ]', e.message);
+    }
+    return null;
+}
+
+function getTimeOfDayContext() {
+    const hourStr = new Date().toLocaleString('en-US', { timeZone: 'Africa/Lusaka', hour: '2-digit', hour12: false });
+    const h = parseInt(hourStr, 10);
+    if (h >= 5 && h < 12) return 'morning';
+    if (h >= 12 && h < 17) return 'afternoon';
+    if (h >= 17 && h < 21) return 'evening';
+    return 'night';
 }
 
 const PERSONAL_FACTS = `- Runs an online business, MidTech Digital: builds websites, WhatsApp automation/chatbots, SEO, and Google Business Profiles for small businesses
@@ -241,9 +295,11 @@ GENERAL RULES:
 - Never use exclamation marks.
 - Understand common chat shorthand (hru, wyd, wbu, brb, idk, lol, etc.) and emojis the way a real person would.
 - Pick up on emotional tone (upset, joking, stressed, excited) and respond appropriately - don't ignore it.
+- It's currently ${getTimeOfDayContext()} where Charles is (Zambia time) - let that inform greeting style naturally (don't say "good morning" if it's evening there), but always prioritize actually answering what the person said over forcing a time-based greeting.
 - If someone just greets you or asks how you are, reply casually like a real person, never like a business assistant ("how can I help you today"). Vary your wording every time so it never sounds scripted or like an AI - draw on a wide range like these: ${GREETING_EXAMPLES}
 - If someone asks what you're doing (wyd/wud), answer briefly and naturally, like "just thinking about life" or "just chilling" or "was coding actually" - vary it, don't repeat the same line.
 - Don't let the conversation go flat after a greeting - the way a real person texting a friend would, naturally ask something back (what they're up to, how their day's going, etc.) to keep it going instead of just answering and stopping.
+- Actually read and respond to what the person just said - never fall back to a generic "what's up" style line when they asked something specific or made a real point. If they clarify or repeat themselves, that means your last reply missed the point - address it properly this time.
 - If a message is genuinely unclear or hard to make out, ask the person to repeat it or type it out instead of guessing.
 - If someone sincerely and directly asks whether they're talking to an AI/bot, or asks "is this really you", answer honestly - never deny it.
 - Never invent prices, links, quotations or facts that aren't in memory or the recent messages.
@@ -251,69 +307,46 @@ GENERAL RULES:
 }
 
 // Classify a contact as friend/family/client/lead based on the conversation so far.
-// Runs in the background - never awaited on the critical reply path.
+// Runs in the background - never awaited on the critical reply path. Uses Groq
+// (not Gemini) so it never competes with real replies for Gemini's tight quota.
 async function classifyRelationship(phone) {
-    if (!GEMINI_API_KEY) return;
+    if (!GROQ_API_KEY) return;
     const customer = getOrCreateCustomer(phone);
     if (customer.history.length < 4) return;
     if (customer.memory.relationship && customer.history.length % 6 !== 0) return;
 
-    try {
-        const convoText = customer.history.slice(-10)
-            .map(h => `${h.role === 'assistant' ? 'Charles' : 'Them'}: ${h.content}`)
-            .join('\n');
-        const prompt = `Based on this WhatsApp conversation, classify who "Them" is to Charles as exactly one of: friend, family, client, lead, unknown.
+    const convoText = customer.history.slice(-10)
+        .map(h => `${h.role === 'assistant' ? 'Charles' : 'Them'}: ${h.content}`)
+        .join('\n');
+    const prompt = `Based on this WhatsApp conversation, classify who "Them" is to Charles as exactly one of: friend, family, client, lead, unknown.
 Reply with only that one lowercase word, nothing else.
 
 ${convoText}`;
 
-        const res = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
-            }
-        );
-        const data = await res.json();
-        const word = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim().toLowerCase().replace(/[^a-z]/g, '');
-        if (RELATIONSHIP_TYPES.includes(word)) {
-            customer.memory.relationship = word;
-            saveState();
-        }
-    } catch (e) {
-        console.log('[CLASSIFY]', e.message);
+    const reply = await callGroq([{ role: 'user', content: prompt }], 10);
+    const word = reply?.trim().toLowerCase().replace(/[^a-z]/g, '');
+    if (word && RELATIONSHIP_TYPES.includes(word)) {
+        customer.memory.relationship = word;
+        saveState();
     }
 }
 
 // Re-learn Charles's own texting voice from his most recent sent messages.
-// Runs in the background - never awaited on the critical reply path.
+// Runs in the background - never awaited on the critical reply path. Uses Groq
+// (not Gemini) so it never competes with real replies for Gemini's tight quota.
 async function updateStyleProfile() {
-    if (!GEMINI_API_KEY || humanSamples.length < 6) return;
-    try {
-        const sampleText = humanSamples.slice(-STYLE_SAMPLE_CAP).join('\n');
-        const prompt = `These are real WhatsApp messages a person named Charles typed himself.
+    if (!GROQ_API_KEY || humanSamples.length < 6) return;
+    const sampleText = humanSamples.slice(-STYLE_SAMPLE_CAP).join('\n');
+    const prompt = `These are real WhatsApp messages a person named Charles typed himself.
 In 3 short bullet points (under 60 words total), describe his texting voice: tone, typical phrasing/slang, punctuation and capitalization habits, emoji use. This will guide an assistant writing replies in his voice, so be concrete, not generic.
 
 ${sampleText}`;
 
-        const res = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
-            }
-        );
-        const data = await res.json();
-        const summary = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-        if (summary) {
-            styleProfile = summary;
-            saveState();
-            console.log('[STYLE] profile updated');
-        }
-    } catch (e) {
-        console.log('[STYLE]', e.message);
+    const summary = await callGroq([{ role: 'user', content: prompt }], 150);
+    if (summary) {
+        styleProfile = summary;
+        saveState();
+        console.log('[STYLE] profile updated');
     }
 }
 
@@ -395,66 +428,159 @@ ${memoryBlock}`;
 
     // Gemini
     if (GEMINI_API_KEY) {
-        try {
-            const payload = {
-                system_instruction: { parts: [{ text: systemPrompt }] },
-                contents: recent.map(h => ({
-                    role: h.role === 'assistant' ? 'model' : 'user',
-                    parts: [{ text: h.content }]
-                }))
-            };
+        for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+                const payload = {
+                    system_instruction: { parts: [{ text: systemPrompt }] },
+                    contents: recent.map(h => ({
+                        role: h.role === 'assistant' ? 'model' : 'user',
+                        parts: [{ text: h.content }]
+                    }))
+                };
 
+                const res = await fetch(
+                    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    }
+                );
+                const data = await res.json();
+                if (res.ok && data?.candidates?.[0]?.content?.parts?.[0]?.text) {
+                    return data.candidates[0].content.parts[0].text.trim();
+                }
+                console.log('[GEMINI] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 500));
+                if (res.status === 503 && attempt === 0) {
+                    await new Promise(r => setTimeout(r, 1500));
+                    continue; // one retry for transient "high demand" errors only
+                }
+                break;
+            } catch (e) {
+                console.log('[GEMINI]', e.message);
+                break;
+            }
+        }
+    }
+
+    // Groq fallback (also has its own catalog, but far more stable than NVIDIA's)
+    const groqReply = await callGroq([{ role: 'system', content: systemPrompt }, ...recent], 120);
+    if (groqReply) return groqReply;
+
+    // Simple fallback - both providers unavailable
+    console.log('[AI] both providers unavailable/failed, using local fallback. GEMINI_API_KEY set=' + !!GEMINI_API_KEY + ', GROQ_API_KEY set=' + !!GROQ_API_KEY);
+    const fallbackLines = ["Hey, I'm good, what's up.", "I'm okay, you?", "Doing alright, just busy.", "All good here, what's up with you.", "I'm fine, just thinking about life."];
+    return fallbackLines[Math.floor(Math.random() * fallbackLines.length)];
+}
+
+// ====== BOT ======
+// ====== GROUPS ======
+async function generateGroupReply(groupJid, senderLabel, triggerMessage) {
+    const group = groups.get(groupJid) || { history: [] };
+    const transcript = group.history.slice(-15).map(h => `${h.label}: ${h.content}`).join('\n');
+    const styleBlock = styleProfile ? `\nHOW CHARLES ACTUALLY TEXTS (match this voice):\n${styleProfile}\n` : '';
+
+    const systemPrompt = `You are Charles, replying in a WhatsApp group chat. ${senderLabel} just mentioned you or replied to one of your messages, so you're jumping in.
+Keep it short and casual, the way Charles actually chats in a group - not like a business assistant.
+It's currently ${getTimeOfDayContext()} where Charles is (Zambia time).
+${styleBlock}
+RECENT GROUP CONVERSATION (read this so you understand what's going on before replying):
+${transcript}
+
+GENERAL RULES:
+- Never use exclamation marks.
+- Understand shorthand/slang and emojis naturally.
+- Actually respond to what's relevant to you in the conversation above, not a generic reply.
+- If someone sincerely and directly asks if you're an AI/bot, answer honestly.
+- Don't invent facts, plans, or claims that aren't in the conversation above.`;
+
+    const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: `${senderLabel}: ${triggerMessage}` }];
+
+    if (GEMINI_API_KEY) {
+        try {
             const res = await fetch(
                 `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`,
                 {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify({
+                        system_instruction: { parts: [{ text: systemPrompt }] },
+                        contents: [{ role: 'user', parts: [{ text: `${senderLabel}: ${triggerMessage}` }] }]
+                    })
                 }
             );
             const data = await res.json();
             if (res.ok && data?.candidates?.[0]?.content?.parts?.[0]?.text) {
                 return data.candidates[0].content.parts[0].text.trim();
             }
-            console.log('[GEMINI] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 500));
+            console.log('[GROUP GEMINI] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 400));
         } catch (e) {
-            console.log('[GEMINI]', e.message);
+            console.log('[GROUP GEMINI]', e.message);
         }
     }
 
-    // NVIDIA fallback
-    if (NVIDIA_API_KEY) {
-        try {
-            const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${NVIDIA_API_KEY}`
-                },
-                body: JSON.stringify({
-                    model: 'openai/gpt-oss-120b',
-                    messages: [{ role: 'system', content: systemPrompt }, ...recent],
-                    max_tokens: 120,
-                    temperature: 0.5
-                })
-            });
-            const data = await res.json();
-            if (res.ok && data?.choices?.[0]?.message?.content) {
-                return data.choices[0].message.content.trim();
-            }
-            console.log('[NVIDIA] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 500));
-        } catch (e) {
-            console.log('[NVIDIA]', e.message);
-        }
-    }
+    const groqReply = await callGroq(messages, 100);
+    if (groqReply) return groqReply;
 
-    // Simple fallback - both providers unavailable
-    console.log('[AI] both providers unavailable/failed, using local fallback. GEMINI_API_KEY set=' + !!GEMINI_API_KEY + ', NVIDIA_API_KEY set=' + !!NVIDIA_API_KEY);
-    const fallbackLines = ["Hey, I'm good, what's up.", "I'm okay, you?", "Doing alright, just busy.", "All good here, what's up with you.", "I'm fine, just thinking about life."];
-    return fallbackLines[Math.floor(Math.random() * fallbackLines.length)];
+    return "Hey what's up";
 }
 
-// ====== BOT ======
+async function handleGroupMessage(sock, msg, groupJid, text) {
+    if (!groups.has(groupJid)) groups.set(groupJid, { history: [] });
+    const group = groups.get(groupJid);
+
+    if (msg.key.fromMe) {
+        // Charles speaking in the group himself - log it, learn his voice, quiet the bot here briefly
+        if (text) {
+            group.history.push({ label: 'Charles', content: text, timestamp: new Date().toISOString() });
+            if (group.history.length > GROUP_HISTORY_CAP) group.history.splice(0, group.history.length - GROUP_HISTORY_CAP);
+            groupManualMutes.set(groupJid, Date.now());
+
+            humanSamples.push(text);
+            if (humanSamples.length > STYLE_SAMPLE_CAP) humanSamples.splice(0, humanSamples.length - STYLE_SAMPLE_CAP);
+            sinceLastStyleUpdate++;
+            if (sinceLastStyleUpdate >= STYLE_UPDATE_EVERY) {
+                sinceLastStyleUpdate = 0;
+                updateStyleProfile().catch(() => {});
+            }
+            saveState();
+        }
+        return;
+    }
+
+    if (!text) return; // media-in-groups isn't handled yet, to keep API usage sane
+
+    const participant = msg.key.participant || groupJid;
+    const senderLabel = msg.pushName || getCleanNumber(participant) || 'someone';
+
+    group.history.push({ label: senderLabel, content: text, timestamp: new Date().toISOString() });
+    if (group.history.length > GROUP_HISTORY_CAP) group.history.splice(0, group.history.length - GROUP_HISTORY_CAP);
+    saveState();
+
+    // Only jump in if Charles was @mentioned or this is a reply to one of his own messages
+    const ctx = msg.message?.extendedTextMessage?.contextInfo;
+    const mentioned = (ctx?.mentionedJid || []).some(j => getCleanNumber(j) === botOwnNumber);
+    const repliedToHim = ctx?.participant && getCleanNumber(ctx.participant) === botOwnNumber;
+    if (!mentioned && !repliedToHim) return;
+
+    const isMuted = Date.now() - (groupManualMutes.get(groupJid) || 0) < MUTE_DURATION;
+    if (isMuted) return;
+
+    try { await sock.readMessages([msg.key]); } catch (e) {}
+    await new Promise(r => setTimeout(r, Math.min(Math.max(text.length * 15, 400), 2000)));
+    await sock.sendPresenceUpdate('composing', groupJid);
+
+    const raw = await generateGroupReply(groupJid, senderLabel, text);
+    const reply = sanitizeReply(raw);
+
+    group.history.push({ label: 'Charles', content: reply, timestamp: new Date().toISOString() });
+    saveState();
+
+    await new Promise(r => setTimeout(r, Math.min(Math.max(reply.length * 18, 1000), 2800)));
+    await sock.sendPresenceUpdate('paused', groupJid);
+    await sendTrackedMessage(sock, groupJid, { text: reply });
+}
+
 async function startBot() {
     if (currentSock) {
         try { currentSock.end(undefined); } catch (e) {}
@@ -515,6 +641,7 @@ async function startBot() {
             console.log('Connected to WhatsApp');
             isConnected = true;
             qrCodeDataUrl = '';
+            botOwnNumber = getCleanNumber(sock.user?.id);
         } else if (connection === 'close') {
             isConnected = false;
             const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
@@ -533,12 +660,17 @@ async function startBot() {
         const sender = msg.key.remoteJid;
         if (!sender || NON_PERSONAL_SUFFIXES.some(suf => sender.endsWith(suf))) return;
 
-        const phone = getCleanNumber(sender);
-        if (!phone) return;
-
         const text = msg.message.conversation ||
                      msg.message.extendedTextMessage?.text ||
                      msg.message.imageMessage?.caption;
+
+        if (sender.endsWith('@g.us')) {
+            await handleGroupMessage(sock, msg, sender, text);
+            return;
+        }
+
+        const phone = getCleanNumber(sender);
+        if (!phone) return;
 
         // ========== HUMAN MESSAGE ==========
         if (msg.key.fromMe) {
