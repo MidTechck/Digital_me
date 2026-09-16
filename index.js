@@ -10,6 +10,7 @@ const crypto = require('crypto');
 
 // ====== ENV ======
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const OWNER_NOTIFY_NUMBER = process.env.OWNER_NOTIFY_NUMBER || '';
 const OWNER_DIRECT_LINE = process.env.OWNER_DIRECT_LINE || '';
@@ -219,6 +220,33 @@ async function checkBuyingIntent(sock, sender, text, isMuted) {
             text: `Possible business enquiry\nFrom: ${getCleanNumber(sender)}\nMessage: ${text}`
         });
     } catch (e) {}
+}
+
+async function callDeepSeek(messages, maxTokens = 120) {
+    if (!DEEPSEEK_API_KEY) return null;
+    try {
+        const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+            },
+            body: JSON.stringify({
+                model: 'deepseek-v4-flash',
+                messages,
+                max_tokens: maxTokens,
+                temperature: 0.5
+            })
+        });
+        const data = await res.json();
+        if (res.ok && data?.choices?.[0]?.message?.content) {
+            return data.choices[0].message.content.trim();
+        }
+        console.log('[DEEPSEEK] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 500));
+    } catch (e) {
+        console.log('[DEEPSEEK]', e.message);
+    }
+    return null;
 }
 
 async function callGroq(messages, maxTokens = 120) {
@@ -463,122 +491,51 @@ ${memoryBlock}`;
         }
     }
 
-    // Groq fallback (also has its own catalog, but far more stable than NVIDIA's)
+    // DeepSeek fallback - paid, but far more stable than NVIDIA was
+    const deepseekReply = await callDeepSeek([{ role: 'system', content: systemPrompt }, ...recent], 120);
+    if (deepseekReply) return deepseekReply;
+
+    // Groq fallback (free tier)
     const groqReply = await callGroq([{ role: 'system', content: systemPrompt }, ...recent], 120);
     if (groqReply) return groqReply;
 
-    // Simple fallback - both providers unavailable
-    console.log('[AI] both providers unavailable/failed, using local fallback. GEMINI_API_KEY set=' + !!GEMINI_API_KEY + ', GROQ_API_KEY set=' + !!GROQ_API_KEY);
+    // Simple fallback - all providers unavailable
+    console.log('[AI] all providers unavailable/failed, using local fallback. GEMINI=' + !!GEMINI_API_KEY + ', DEEPSEEK=' + !!DEEPSEEK_API_KEY + ', GROQ=' + !!GROQ_API_KEY);
     const fallbackLines = ["Hey, I'm good, what's up.", "I'm okay, you?", "Doing alright, just busy.", "All good here, what's up with you.", "I'm fine, just thinking about life."];
     return fallbackLines[Math.floor(Math.random() * fallbackLines.length)];
 }
 
 // ====== BOT ======
 // ====== GROUPS ======
-async function generateGroupReply(groupJid, senderLabel, triggerMessage) {
-    const group = groups.get(groupJid) || { history: [] };
-    const transcript = group.history.slice(-15).map(h => `${h.label}: ${h.content}`).join('\n');
-    const styleBlock = styleProfile ? `\nHOW CHARLES ACTUALLY TEXTS (match this voice):\n${styleProfile}\n` : '';
-
-    const systemPrompt = `You are Charles, replying in a WhatsApp group chat. ${senderLabel} just mentioned you or replied to one of your messages, so you're jumping in.
-Keep it short and casual, the way Charles actually chats in a group - not like a business assistant.
-It's currently ${getTimeOfDayContext()} where Charles is (Zambia time).
-${styleBlock}
-RECENT GROUP CONVERSATION (read this so you understand what's going on before replying):
-${transcript}
-
-GENERAL RULES:
-- Never use exclamation marks.
-- Understand shorthand/slang and emojis naturally.
-- Actually respond to what's relevant to you in the conversation above, not a generic reply.
-- If someone sincerely and directly asks if you're an AI/bot, answer honestly.
-- Don't invent facts, plans, or claims that aren't in the conversation above.`;
-
-    const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: `${senderLabel}: ${triggerMessage}` }];
-
-    if (GEMINI_API_KEY) {
-        try {
-            const res = await fetch(
-                `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        system_instruction: { parts: [{ text: systemPrompt }] },
-                        contents: [{ role: 'user', parts: [{ text: `${senderLabel}: ${triggerMessage}` }] }]
-                    })
-                }
-            );
-            const data = await res.json();
-            if (res.ok && data?.candidates?.[0]?.content?.parts?.[0]?.text) {
-                return data.candidates[0].content.parts[0].text.trim();
-            }
-            console.log('[GROUP GEMINI] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 400));
-        } catch (e) {
-            console.log('[GROUP GEMINI]', e.message);
-        }
-    }
-
-    const groqReply = await callGroq(messages, 100);
-    if (groqReply) return groqReply;
-
-    return "Hey what's up";
-}
-
+// Groups are tracked passively (zero API cost) so there's context on hand if this
+// is ever revisited, but the bot never replies or spends a request in a group.
 async function handleGroupMessage(sock, msg, groupJid, text) {
+    if (!text) return;
     if (!groups.has(groupJid)) groups.set(groupJid, { history: [] });
     const group = groups.get(groupJid);
 
     if (msg.key.fromMe) {
-        // Charles speaking in the group himself - log it, learn his voice, quiet the bot here briefly
-        if (text) {
-            group.history.push({ label: 'Charles', content: text, timestamp: new Date().toISOString() });
-            if (group.history.length > GROUP_HISTORY_CAP) group.history.splice(0, group.history.length - GROUP_HISTORY_CAP);
-            groupManualMutes.set(groupJid, Date.now());
+        // Charles speaking in the group himself - log it and learn his voice from it
+        group.history.push({ label: 'Charles', content: text, timestamp: new Date().toISOString() });
+        if (group.history.length > GROUP_HISTORY_CAP) group.history.splice(0, group.history.length - GROUP_HISTORY_CAP);
 
-            humanSamples.push(text);
-            if (humanSamples.length > STYLE_SAMPLE_CAP) humanSamples.splice(0, humanSamples.length - STYLE_SAMPLE_CAP);
-            sinceLastStyleUpdate++;
-            if (sinceLastStyleUpdate >= STYLE_UPDATE_EVERY) {
-                sinceLastStyleUpdate = 0;
-                updateStyleProfile().catch(() => {});
-            }
-            saveState();
+        humanSamples.push(text);
+        if (humanSamples.length > STYLE_SAMPLE_CAP) humanSamples.splice(0, humanSamples.length - STYLE_SAMPLE_CAP);
+        sinceLastStyleUpdate++;
+        if (sinceLastStyleUpdate >= STYLE_UPDATE_EVERY) {
+            sinceLastStyleUpdate = 0;
+            updateStyleProfile().catch(() => {});
         }
+        saveState();
         return;
     }
 
-    if (!text) return; // media-in-groups isn't handled yet, to keep API usage sane
-
     const participant = msg.key.participant || groupJid;
     const senderLabel = msg.pushName || getCleanNumber(participant) || 'someone';
-
     group.history.push({ label: senderLabel, content: text, timestamp: new Date().toISOString() });
     if (group.history.length > GROUP_HISTORY_CAP) group.history.splice(0, group.history.length - GROUP_HISTORY_CAP);
     saveState();
-
-    // Only jump in if Charles was @mentioned or this is a reply to one of his own messages
-    const ctx = msg.message?.extendedTextMessage?.contextInfo;
-    const mentioned = (ctx?.mentionedJid || []).some(j => getCleanNumber(j) === botOwnNumber);
-    const repliedToHim = ctx?.participant && getCleanNumber(ctx.participant) === botOwnNumber;
-    if (!mentioned && !repliedToHim) return;
-
-    const isMuted = Date.now() - (groupManualMutes.get(groupJid) || 0) < MUTE_DURATION;
-    if (isMuted) return;
-
-    try { await sock.readMessages([msg.key]); } catch (e) {}
-    await new Promise(r => setTimeout(r, Math.min(Math.max(text.length * 15, 400), 2000)));
-    await sock.sendPresenceUpdate('composing', groupJid);
-
-    const raw = await generateGroupReply(groupJid, senderLabel, text);
-    const reply = sanitizeReply(raw);
-
-    group.history.push({ label: 'Charles', content: reply, timestamp: new Date().toISOString() });
-    saveState();
-
-    await new Promise(r => setTimeout(r, Math.min(Math.max(reply.length * 18, 1000), 2800)));
-    await sock.sendPresenceUpdate('paused', groupJid);
-    await sendTrackedMessage(sock, groupJid, { text: reply });
+    // No AI call, no reply sent - groups are read-only for now.
 }
 
 async function startBot() {
@@ -751,6 +708,15 @@ async function startBot() {
 
         const lower = text.trim().toLowerCase();
         const isOwner = OWNER_NOTIFY_NUMBER && sender.includes(OWNER_NOTIFY_NUMBER.replace(/\D/g, ''));
+
+        // Check what the bot has actually learned so far
+        if (isOwner && lower === '/style') {
+            const reply = styleProfile
+                ? `Current learned style:\n${styleProfile}`
+                : 'No style learned yet - needs at least 6 of your own messages first.';
+            await sendTrackedMessage(sock, sender, { text: reply });
+            return;
+        }
 
         // Manual seeding (Option B)
         if (isOwner && lower.startsWith('/note ')) {
