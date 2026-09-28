@@ -11,7 +11,11 @@ const crypto = require('crypto');
 // ====== ENV ======
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const XAI_API_KEY = process.env.XAI_API_KEY || '';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 const OWNER_NOTIFY_NUMBER = process.env.OWNER_NOTIFY_NUMBER || '';
 const OWNER_DIRECT_LINE = process.env.OWNER_DIRECT_LINE || '';
 
@@ -65,10 +69,10 @@ const RELATIONSHIP_TYPES = ['friend', 'family', 'client', 'lead', 'unknown'];
 const NON_PERSONAL_SUFFIXES = ['@broadcast', '@newsletter'];
 
 // ====== GROUPS ======
-const groups = new Map();             // groupJid → { history: [{label, content, timestamp}] }
-const groupManualMutes = new Map();
+// Groups are tracked passively (zero API cost) - the bot never replies in a group.
+const groups = new Map();
 const GROUP_HISTORY_CAP = 20;
-let botOwnNumber = null;              // set once connected, used to detect @mentions/replies to Charles
+let botOwnNumber = null;
 
 function getCleanNumber(jid) {
     if (!jid) return null;
@@ -86,7 +90,7 @@ function getOrCreateCustomer(phone) {
                 status: 'new',
                 notes: '',
                 lastSummary: '',
-                relationship: null,        // 'friend' | 'family' | 'client' | 'lead' | 'unknown'
+                relationship: null,
                 updatedAt: new Date().toISOString()
             },
             history: []
@@ -130,6 +134,23 @@ function sanitizeReply(text) {
     return cleaned;
 }
 
+// Sometimes send a reply as 2 short separate messages instead of one, matching
+// how Charles actually texts (fires off a few quick lines rather than one block).
+async function sendLikeCharles(sock, jid, reply) {
+    const parts = reply.split(/(?<=[.?])\s+(?=[A-Z])/).filter(Boolean);
+    const shouldSplit = parts.length >= 2 && parts.length <= 3 && Math.random() < 0.35;
+    const chunks = shouldSplit ? parts : [reply];
+
+    for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        await sock.sendPresenceUpdate('composing', jid);
+        await new Promise(r => setTimeout(r, Math.min(Math.max(chunk.length * 18, 700), 2600)));
+        await sock.sendPresenceUpdate('paused', jid);
+        await sendTrackedMessage(sock, jid, { text: chunk });
+        if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 350 + Math.random() * 400));
+    }
+}
+
 // ====== LOAD / SAVE ======
 function loadState() {
     let raw;
@@ -163,11 +184,6 @@ function loadState() {
                 groups.set(jid, data);
             }
         }
-        if (parsed.groupManualMutes) {
-            for (const [k, v] of Object.entries(parsed.groupManualMutes)) {
-                groupManualMutes.set(k, v);
-            }
-        }
         console.log(`Restored ${customers.size} customers`);
     } catch (e) {
         console.log('Failed to parse saved state:', e.message);
@@ -181,8 +197,7 @@ function saveState() {
             manualMutes: Object.fromEntries(manualMutes),
             styleProfile,
             humanSamples,
-            groups: Object.fromEntries(groups),
-            groupManualMutes: Object.fromEntries(groupManualMutes)
+            groups: Object.fromEntries(groups)
         };
         fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2));
     } catch (e) {
@@ -222,59 +237,19 @@ async function checkBuyingIntent(sock, sender, text, isMuted) {
     } catch (e) {}
 }
 
-async function callDeepSeek(messages, maxTokens = 120) {
-    if (!DEEPSEEK_API_KEY) return null;
-    try {
-        const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
-            },
-            body: JSON.stringify({
-                model: 'deepseek-v4-flash',
-                messages,
-                max_tokens: maxTokens,
-                temperature: 0.5
-            })
-        });
-        const data = await res.json();
-        if (res.ok && data?.choices?.[0]?.message?.content) {
-            return data.choices[0].message.content.trim();
-        }
-        console.log('[DEEPSEEK] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 500));
-    } catch (e) {
-        console.log('[DEEPSEEK]', e.message);
-    }
-    return null;
-}
+const PERSONAL_FACTS = `- Runs an online business, MidTech Digital: builds websites, WhatsApp automation/chatbots, SEO, and Google Business Profiles for small businesses
+- Based in Ndola, Zambia
+- Into coding
+Share these ONLY if someone directly asks about them. Never volunteer them unprompted, and never list off skills or brag about capabilities. If asked something more personal than this (age, school, relationships, etc.), keep it light and vague rather than specific.`;
 
-async function callGroq(messages, maxTokens = 120) {
-    if (!GROQ_API_KEY) return null;
-    try {
-        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${GROQ_API_KEY}`
-            },
-            body: JSON.stringify({
-                model: 'llama-3.3-70b-versatile',
-                messages,
-                max_tokens: maxTokens,
-                temperature: 0.5
-            })
-        });
-        const data = await res.json();
-        if (res.ok && data?.choices?.[0]?.message?.content) {
-            return data.choices[0].message.content.trim();
-        }
-        console.log('[GROQ] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 500));
-    } catch (e) {
-        console.log('[GROQ]', e.message);
-    }
-    return null;
-}
+const GREETING_EXAMPLES = `"I'm good, you?" / "Doing great, thanks, you?" / "I'm fine, how about you?" / "Not bad, you?" / "I'm okay, just tired though" / "Good good, you?" / "I'm alright, what about you?" / "Been better honestly, you?" / "Chilling, you?" / "Just woke up, I'm good, you?" / "I'm great, thanks for asking" / "Same as always, you?" / "Doing okay, just busy" / "I'm fine, just thinking about life" / "All good here, you?" / "Not too bad, you?" / "I'm good, was just coding actually" / "Feeling good today, you?" / "I'm alright, just chilling now" / "Doing fine, what's up with you?"`;
+
+const LOCAL_FALLBACK_LINES = [
+    "Hey, I'm good, what's up.", "I'm okay, you?", "Doing alright, just busy.",
+    "All good here, what's up with you.", "I'm fine, just thinking about life.",
+    "Yh I'm good.", "Chilling, you?", "Not bad, what about you.",
+    "I'm alright, just tired.", "Good good, wbu."
+];
 
 function getTimeOfDayContext() {
     const hourStr = new Date().toLocaleString('en-US', { timeZone: 'Africa/Lusaka', hour: '2-digit', hour12: false });
@@ -285,34 +260,105 @@ function getTimeOfDayContext() {
     return 'night';
 }
 
-const PERSONAL_FACTS = `- Runs an online business, MidTech Digital: builds websites, WhatsApp automation/chatbots, SEO, and Google Business Profiles for small businesses
-- Based in Ndola, Zambia
-- Into coding
-Share these ONLY if someone directly asks about them. Never volunteer them unprompted, and never list off skills or brag about capabilities. If asked something more personal than this (age, school, relationships, etc.), keep it light and vague rather than specific.`;
+// ====== PROVIDER CALLS (all OpenAI-compatible chat completions except Anthropic) ======
+async function callOpenAICompatible(name, url, key, model, messages, maxTokens, extraHeaders) {
+    if (!key) return null;
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: Object.assign({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` }, extraHeaders || {}),
+            body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature: 0.5 })
+        });
+        const data = await res.json();
+        if (res.ok && data?.choices?.[0]?.message?.content) {
+            return data.choices[0].message.content.trim();
+        }
+        console.log(`[${name}] no usable reply, status=` + res.status, JSON.stringify(data).slice(0, 400));
+    } catch (e) {
+        console.log(`[${name}]`, e.message);
+    }
+    return null;
+}
 
-const GREETING_EXAMPLES = `"I'm good, you?" / "Doing great, thanks, you?" / "I'm fine, how about you?" / "Not bad, you?" / "I'm okay, just tired though" / "Good good, you?" / "I'm alright, what about you?" / "Been better honestly, you?" / "Chilling, you?" / "Just woke up, I'm good, you?" / "I'm great, thanks for asking" / "Same as always, you?" / "Doing okay, just busy" / "I'm fine, just thinking about life" / "All good here, you?" / "Not too bad, you?" / "I'm good, was just coding actually" / "Feeling good today, you?" / "I'm alright, just chilling now" / "Doing fine, what's up with you?"`;
+const callDeepSeek = (messages, maxTokens = 120) =>
+    callOpenAICompatible('DEEPSEEK', 'https://api.deepseek.com/v1/chat/completions', DEEPSEEK_API_KEY, 'deepseek-v4-flash', messages, maxTokens);
+
+const callOpenAI = (messages, maxTokens = 120) =>
+    callOpenAICompatible('OPENAI', 'https://api.openai.com/v1/chat/completions', OPENAI_API_KEY, 'gpt-5-mini', messages, maxTokens);
+
+const callXAI = (messages, maxTokens = 120) =>
+    callOpenAICompatible('XAI', 'https://api.x.ai/v1/chat/completions', XAI_API_KEY, 'grok-4.3', messages, maxTokens);
+
+const callGroq = (messages, maxTokens = 120) =>
+    callOpenAICompatible('GROQ', 'https://api.groq.com/openai/v1/chat/completions', GROQ_API_KEY, 'openai/gpt-oss-20b', messages, maxTokens);
+
+const callOpenRouter = (messages, maxTokens = 120) =>
+    callOpenAICompatible('OPENROUTER', 'https://openrouter.ai/api/v1/chat/completions', OPENROUTER_API_KEY, 'openai/gpt-4o-mini', messages, maxTokens);
+
+async function callAnthropic(systemPrompt, messages, maxTokens = 150) {
+    if (!ANTHROPIC_API_KEY) return null;
+    try {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': ANTHROPIC_API_KEY,
+                'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify({
+                model: 'claude-haiku-4-5-20251001',
+                system: systemPrompt,
+                max_tokens: maxTokens,
+                messages
+            })
+        });
+        const data = await res.json();
+        if (res.ok && data?.content?.[0]?.text) {
+            return data.content[0].text.trim();
+        }
+        console.log('[ANTHROPIC] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 400));
+    } catch (e) {
+        console.log('[ANTHROPIC]', e.message);
+    }
+    return null;
+}
+
+// Background tasks (classification, style learning) use whichever cheap provider
+// answers first - never Gemini, so they never compete with real replies for its quota.
+async function callBackground(prompt, maxTokens = 150) {
+    const messages = [{ role: 'user', content: prompt }];
+    return (await callDeepSeek(messages, maxTokens))
+        || (await callGroq(messages, maxTokens))
+        || (await callXAI(messages, maxTokens));
+}
 
 // Figure out how Charles should sound for this specific contact, and build the
-// persona + learned-style text shared by both the text and media-reply paths.
+// persona + learned-style text shared by every reply path.
 function buildPersonaAndStyle(phone) {
     const customer = getOrCreateCustomer(phone);
     const relationship = customer.memory.relationship;
 
     let personaBlock;
     if (relationship === 'client' || relationship === 'lead') {
-        personaBlock = `You are Charles, replying to a client/business contact on WhatsApp about MidTech Digital work (websites, WhatsApp automation, SEO, Google Business Profiles).
+        personaBlock = `You are Charles. Not an assistant, not a description of Charles - you ARE him, replying in the first person as "I". You're texting a client/business contact on WhatsApp about MidTech Digital work (websites, WhatsApp automation, SEO, Google Business Profiles).
 Keep replies short (1-2 sentences), calm and professional. Only talk about specifics (prices, timelines, scope) that are in this contact's notes below or in the recent messages - never invent project details.`;
     } else if (relationship === 'friend' || relationship === 'family') {
-        personaBlock = `You are Charles, personally replying to a ${relationship} of his on WhatsApp.
+        personaBlock = `You are Charles. Not an assistant, not a description of Charles - you ARE him, replying in the first person as "I" to a ${relationship} on WhatsApp.
 Keep it short, casual and warm - the way Charles actually texts people he knows. This is not a business conversation, so don't bring up work/business unless they ask about it directly.`;
     } else {
-        personaBlock = `You are Charles, replying on WhatsApp to someone whose relationship to him isn't clear yet - maybe a new friend, maybe someone he hasn't texted in a while.
-Keep it short and friendly. Make them feel noticed and welcomed, not brushed off with something generic - respond with real interest, the way Charles would to someone new, not a cold or robotic default. Don't bring up business/work unless they ask about it.`;
+        personaBlock = `You are Charles. Not an assistant, not a description of Charles - you ARE him, replying in the first person as "I" on WhatsApp to someone whose relationship to him isn't clear yet.
+Keep it short and friendly. Make them feel noticed and welcomed, not brushed off with something generic. Don't bring up business/work unless they ask about it.`;
     }
 
     const styleBlock = styleProfile
         ? `\nHOW CHARLES ACTUALLY TEXTS (match this voice):\n${styleProfile}\n`
-        : '';
+        : `\nHOW CHARLES ACTUALLY TEXTS (match this voice):
+- Most messages are 1-6 words. Full grammatically-correct sentences are rare, not the norm.
+- Near-zero punctuation - no periods, rarely a question mark even on real questions.
+- Reactive fragments over explanations: "Who's that", "Where?", "Wow", "Ehh", "Mmm", "Yh", "Ok", "Alright" carry entire turns.
+- Sometimes mixes in casual Zambian slang naturally (Mwaiche, Iwe, Wala, Awe, Kaya) - not forced into every message, just when it fits.
+- Playful teasing/mock-insults are normal with close friends.
+`;
 
     return `${personaBlock}
 ${styleBlock}
@@ -320,14 +366,15 @@ ABOUT CHARLES:
 ${PERSONAL_FACTS}
 
 GENERAL RULES:
+- Talk like a real person having a normal phone conversation, not like a product or a service describing itself. Think and respond the way a human actually would - notice what matters in what they said, react to it, don't just process it.
+- Never refer to yourself, Charles, "the AI", "the automation", "the setup", "my team", "linked device" or anything technical in the third person or as a description of a system - even when someone asks how something works, answer as Charles genuinely would in his own words, first person, not as a spec sheet.
 - Never use exclamation marks.
+- It's currently ${getTimeOfDayContext()} where Charles is (Zambia time) - let that inform greeting style naturally (don't say "good morning" if it's evening there), but always prioritize actually answering what the person said over forcing a time-based greeting.
 - Understand common chat shorthand (hru, wyd, wbu, brb, idk, lol, etc.) and emojis the way a real person would.
 - Pick up on emotional tone (upset, joking, stressed, excited) and respond appropriately - don't ignore it.
-- It's currently ${getTimeOfDayContext()} where Charles is (Zambia time) - let that inform greeting style naturally (don't say "good morning" if it's evening there), but always prioritize actually answering what the person said over forcing a time-based greeting.
 - If someone just greets you or asks how you are, reply casually like a real person, never like a business assistant ("how can I help you today"). Vary your wording every time so it never sounds scripted or like an AI - draw on a wide range like these: ${GREETING_EXAMPLES}
 - If someone asks what you're doing (wyd/wud), answer briefly and naturally, like "just thinking about life" or "just chilling" or "was coding actually" - vary it, don't repeat the same line.
-- Don't let the conversation go flat after a greeting - the way a real person texting a friend would, naturally ask something back (what they're up to, how their day's going, etc.) to keep it going instead of just answering and stopping.
-- Actually read and respond to what the person just said - never fall back to a generic "what's up" style line when they asked something specific or made a real point. If they clarify or repeat themselves, that means your last reply missed the point - address it properly this time.
+- Don't let the conversation go flat after a greeting - naturally ask something back (what they're up to, how their day's going) to keep it going, the way a real person texting a friend would.
 - If a message is genuinely unclear or hard to make out, ask the person to repeat it or type it out instead of guessing.
 - If someone sincerely and directly asks whether they're talking to an AI/bot, or asks "is this really you", answer honestly - never deny it.
 - Never invent prices, links, quotations or facts that aren't in memory or the recent messages.
@@ -335,10 +382,8 @@ GENERAL RULES:
 }
 
 // Classify a contact as friend/family/client/lead based on the conversation so far.
-// Runs in the background - never awaited on the critical reply path. Uses Groq
-// (not Gemini) so it never competes with real replies for Gemini's tight quota.
+// Runs in the background - never awaited on the critical reply path.
 async function classifyRelationship(phone) {
-    if (!GROQ_API_KEY) return;
     const customer = getOrCreateCustomer(phone);
     if (customer.history.length < 4) return;
     if (customer.memory.relationship && customer.history.length % 6 !== 0) return;
@@ -351,7 +396,7 @@ Reply with only that one lowercase word, nothing else.
 
 ${convoText}`;
 
-    const reply = await callGroq([{ role: 'user', content: prompt }], 10);
+    const reply = await callBackground(prompt, 10);
     const word = reply?.trim().toLowerCase().replace(/[^a-z]/g, '');
     if (word && RELATIONSHIP_TYPES.includes(word)) {
         customer.memory.relationship = word;
@@ -360,17 +405,16 @@ ${convoText}`;
 }
 
 // Re-learn Charles's own texting voice from his most recent sent messages.
-// Runs in the background - never awaited on the critical reply path. Uses Groq
-// (not Gemini) so it never competes with real replies for Gemini's tight quota.
+// Runs in the background - never awaited on the critical reply path.
 async function updateStyleProfile() {
-    if (!GROQ_API_KEY || humanSamples.length < 6) return;
+    if (humanSamples.length < 6) return;
     const sampleText = humanSamples.slice(-STYLE_SAMPLE_CAP).join('\n');
     const prompt = `These are real WhatsApp messages a person named Charles typed himself.
-In 3 short bullet points (under 60 words total), describe his texting voice: tone, typical phrasing/slang, punctuation and capitalization habits, emoji use. This will guide an assistant writing replies in his voice, so be concrete, not generic.
+In 3 short bullet points (under 60 words total), describe his texting voice: tone, typical phrasing/slang, punctuation and capitalization habits, emoji use, and roughly how many words his messages usually run. Be concrete, not generic - this guides an assistant writing replies in his exact voice.
 
 ${sampleText}`;
 
-    const summary = await callGroq([{ role: 'user', content: prompt }], 150);
+    const summary = await callBackground(prompt, 150);
     if (summary) {
         styleProfile = summary;
         saveState();
@@ -379,45 +423,83 @@ ${sampleText}`;
 }
 
 // Download any media message (voice note, photo, sticker, video/GIF, PDF) and let
-// Gemini look at/listen to it and reply in one pass. Returns the reply text, or
-// null if it couldn't make sense of it.
+// an AI look at/listen to it and reply in one pass. Gemini handles all types
+// natively; for photos/PDFs specifically, Claude is tried next if Gemini fails,
+// since it also supports images and documents directly.
 async function respondToMedia(sock, msg, phone, mimeType, kindLabel, caption) {
-    if (!GEMINI_API_KEY) return null;
+    const systemPrompt = buildPersonaAndStyle(phone);
+    const captionNote = caption ? ` They included this with it: "${caption}"` : '';
+    const instruction = systemPrompt + `\nThe person sent a ${kindLabel} instead of typing.${captionNote} Look at/listen to it and reply naturally, as if you saw/heard it directly. If you cannot make sense of it, say so and ask them to describe it or send it again.`;
+
+    let buffer;
     try {
-        const buffer = await downloadMediaMessage(
+        buffer = await downloadMediaMessage(
             msg, 'buffer', {},
             { reuploadRequest: sock.updateMediaMessage, logger: pino({ level: 'silent' }) }
         );
-        const base64Data = buffer.toString('base64');
-        const systemPrompt = buildPersonaAndStyle(phone);
-        const captionNote = caption ? ` They included this with it: "${caption}"` : '';
-
-        const payload = {
-            system_instruction: {
-                parts: [{ text: systemPrompt + `\nThe person sent a ${kindLabel} instead of typing.${captionNote} Look at/listen to it and reply naturally, as if you saw/heard it directly. If you cannot make sense of it, say so and ask them to describe it or send it again.` }]
-            },
-            contents: [{
-                role: 'user',
-                parts: [{ inline_data: { mime_type: mimeType, data: base64Data } }]
-            }]
-        };
-
-        const res = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            }
-        );
-        const data = await res.json();
-        if (res.ok && data?.candidates?.[0]?.content?.parts?.[0]?.text) {
-            return data.candidates[0].content.parts[0].text.trim();
-        }
-        console.log(`[MEDIA:${kindLabel}] no usable reply, status=` + res.status, JSON.stringify(data).slice(0, 500));
     } catch (e) {
-        console.log(`[MEDIA:${kindLabel}]`, e.message);
+        console.log('[MEDIA] download failed', e.message);
+        return null;
     }
+    const base64Data = buffer.toString('base64');
+
+    if (GEMINI_API_KEY) {
+        try {
+            const res = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        system_instruction: { parts: [{ text: instruction }] },
+                        contents: [{ role: 'user', parts: [{ inline_data: { mime_type: mimeType, data: base64Data } }] }]
+                    })
+                }
+            );
+            const data = await res.json();
+            if (res.ok && data?.candidates?.[0]?.content?.parts?.[0]?.text) {
+                return data.candidates[0].content.parts[0].text.trim();
+            }
+            console.log(`[MEDIA:${kindLabel}] Gemini no usable reply, status=` + res.status, JSON.stringify(data).slice(0, 400));
+        } catch (e) {
+            console.log(`[MEDIA:${kindLabel}]`, e.message);
+        }
+    }
+
+    // Claude can also read images and PDFs directly - worth a second try for those types
+    if ((kindLabel === 'photo' || kindLabel === 'PDF') && ANTHROPIC_API_KEY) {
+        const mediaType = kindLabel === 'PDF' ? 'document' : 'image';
+        try {
+            const res = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': ANTHROPIC_API_KEY,
+                    'anthropic-version': '2023-06-01'
+                },
+                body: JSON.stringify({
+                    model: 'claude-haiku-4-5-20251001',
+                    system: instruction,
+                    max_tokens: 150,
+                    messages: [{
+                        role: 'user',
+                        content: [
+                            { type: mediaType, source: { type: 'base64', media_type: mimeType, data: base64Data } },
+                            { type: 'text', text: 'Reply to this now.' }
+                        ]
+                    }]
+                })
+            });
+            const data = await res.json();
+            if (res.ok && data?.content?.[0]?.text) {
+                return data.content[0].text.trim();
+            }
+            console.log(`[MEDIA:${kindLabel}] Anthropic no usable reply, status=` + res.status, JSON.stringify(data).slice(0, 400));
+        } catch (e) {
+            console.log(`[MEDIA:${kindLabel}] Anthropic`, e.message);
+        }
+    }
+
     return null;
 }
 
@@ -426,18 +508,14 @@ async function generateAIResponse(phone, userMessage) {
     const customer = getOrCreateCustomer(phone);
     const memory = customer.memory;
 
-    // Recent history (includes human messages)
     const recent = customer.history.slice(-MAX_HISTORY).map(h => ({
         role: h.role,
         content: h.content
     }));
-
-    // Ensure latest message is present
     if (recent.length === 0 || recent[recent.length - 1].content !== userMessage) {
         recent.push({ role: 'user', content: userMessage });
     }
 
-    // Build memory block
     let memoryBlock = 'NOTES ON THIS CONTACT:\n';
     if (memory.name) memoryBlock += `Name: ${memory.name}\n`;
     if (memory.location) memoryBlock += `Location: ${memory.location}\n`;
@@ -454,24 +532,22 @@ async function generateAIResponse(phone, userMessage) {
 
 ${memoryBlock}`;
 
-    // Gemini
+    // 1. Gemini (primary - also the only one handling media elsewhere)
     if (GEMINI_API_KEY) {
         for (let attempt = 0; attempt < 2; attempt++) {
             try {
-                const payload = {
-                    system_instruction: { parts: [{ text: systemPrompt }] },
-                    contents: recent.map(h => ({
-                        role: h.role === 'assistant' ? 'model' : 'user',
-                        parts: [{ text: h.content }]
-                    }))
-                };
-
                 const res = await fetch(
                     `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`,
                     {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
+                        body: JSON.stringify({
+                            system_instruction: { parts: [{ text: systemPrompt }] },
+                            contents: recent.map(h => ({
+                                role: h.role === 'assistant' ? 'model' : 'user',
+                                parts: [{ text: h.content }]
+                            }))
+                        })
                     }
                 );
                 const data = await res.json();
@@ -481,7 +557,7 @@ ${memoryBlock}`;
                 console.log('[GEMINI] no usable reply, status=' + res.status, JSON.stringify(data).slice(0, 500));
                 if (res.status === 503 && attempt === 0) {
                     await new Promise(r => setTimeout(r, 1500));
-                    continue; // one retry for transient "high demand" errors only
+                    continue;
                 }
                 break;
             } catch (e) {
@@ -491,31 +567,35 @@ ${memoryBlock}`;
         }
     }
 
-    // DeepSeek fallback - paid, but far more stable than NVIDIA was
-    const deepseekReply = await callDeepSeek([{ role: 'system', content: systemPrompt }, ...recent], 120);
-    if (deepseekReply) return deepseekReply;
+    // 2-6. Paid/free fallback chain, in order
+    const chatMessages = [{ role: 'system', content: systemPrompt }, ...recent];
+    const anthropicMessages = recent.map(h => ({ role: h.role === 'assistant' ? 'assistant' : 'user', content: h.content }));
 
-    // Groq fallback (free tier)
-    const groqReply = await callGroq([{ role: 'system', content: systemPrompt }, ...recent], 120);
-    if (groqReply) return groqReply;
+    const chain = [
+        () => callDeepSeek(chatMessages, 120),
+        () => callOpenAI(chatMessages, 120),
+        () => callAnthropic(systemPrompt, anthropicMessages, 150),
+        () => callXAI(chatMessages, 120),
+        () => callGroq(chatMessages, 120),
+        () => callOpenRouter(chatMessages, 120)
+    ];
+    for (const attempt of chain) {
+        const reply = await attempt();
+        if (reply) return reply;
+    }
 
-    // Simple fallback - all providers unavailable
-    console.log('[AI] all providers unavailable/failed, using local fallback. GEMINI=' + !!GEMINI_API_KEY + ', DEEPSEEK=' + !!DEEPSEEK_API_KEY + ', GROQ=' + !!GROQ_API_KEY);
-    const fallbackLines = ["Hey, I'm good, what's up.", "I'm okay, you?", "Doing alright, just busy.", "All good here, what's up with you.", "I'm fine, just thinking about life."];
-    return fallbackLines[Math.floor(Math.random() * fallbackLines.length)];
+    // 7. Local canned fallback - every provider unavailable
+    console.log('[AI] all providers unavailable/failed, using local fallback');
+    return LOCAL_FALLBACK_LINES[Math.floor(Math.random() * LOCAL_FALLBACK_LINES.length)];
 }
 
-// ====== BOT ======
-// ====== GROUPS ======
-// Groups are tracked passively (zero API cost) so there's context on hand if this
-// is ever revisited, but the bot never replies or spends a request in a group.
+// ====== GROUPS (passive tracking only - never replies, never costs a request) ======
 async function handleGroupMessage(sock, msg, groupJid, text) {
     if (!text) return;
     if (!groups.has(groupJid)) groups.set(groupJid, { history: [] });
     const group = groups.get(groupJid);
 
     if (msg.key.fromMe) {
-        // Charles speaking in the group himself - log it and learn his voice from it
         group.history.push({ label: 'Charles', content: text, timestamp: new Date().toISOString() });
         if (group.history.length > GROUP_HISTORY_CAP) group.history.splice(0, group.history.length - GROUP_HISTORY_CAP);
 
@@ -535,9 +615,9 @@ async function handleGroupMessage(sock, msg, groupJid, text) {
     group.history.push({ label: senderLabel, content: text, timestamp: new Date().toISOString() });
     if (group.history.length > GROUP_HISTORY_CAP) group.history.splice(0, group.history.length - GROUP_HISTORY_CAP);
     saveState();
-    // No AI call, no reply sent - groups are read-only for now.
 }
 
+// ====== BOT ======
 async function startBot() {
     if (currentSock) {
         try { currentSock.end(undefined); } catch (e) {}
@@ -552,13 +632,12 @@ async function startBot() {
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
         browser: Browsers.ubuntu('Chrome'),
-        syncFullHistory: true                 // Option C
+        syncFullHistory: true
     });
 
     currentSock = sock;
     sock.ev.on('creds.update', saveCreds);
 
-    // Try to receive older messages (Option C)
     sock.ev.on('messaging-history.set', ({ messages }) => {
         if (!messages || !messages.length) return;
         console.log(`History sync received: ${messages.length} messages`);
@@ -566,7 +645,7 @@ async function startBot() {
         for (const msg of messages) {
             try {
                 const jid = msg.key?.remoteJid;
-                if (!jid || NON_PERSONAL_SUFFIXES.some(suf => jid.endsWith(suf))) continue;
+                if (!jid || NON_PERSONAL_SUFFIXES.some(suf => jid.endsWith(suf)) || jid.endsWith('@g.us')) continue;
 
                 const phone = getCleanNumber(jid);
                 if (!phone) continue;
@@ -629,15 +708,14 @@ async function startBot() {
         const phone = getCleanNumber(sender);
         if (!phone) return;
 
-        // ========== HUMAN MESSAGE ==========
+        // ========== HUMAN MESSAGE (Charles himself) ==========
         if (msg.key.fromMe) {
             if (botMessageIds.has(msg.key.id)) return;
 
             if (text) {
-                addToHistory(phone, 'assistant', text, true);   // SAVE human message
+                addToHistory(phone, 'assistant', text, true);
                 manualMutes.set(sender, Date.now());
 
-                // Learn Charles's own texting voice from what he actually typed
                 humanSamples.push(text);
                 if (humanSamples.length > STYLE_SAMPLE_CAP) {
                     humanSamples.splice(0, humanSamples.length - STYLE_SAMPLE_CAP);
@@ -657,7 +735,6 @@ async function startBot() {
         // ========== CUSTOMER MESSAGE ==========
         const isMutedNow = Date.now() - (manualMutes.get(sender) || 0) < MUTE_DURATION;
 
-        // Media messages - no usable transcript from Baileys, so hand the file straight to Gemini
         const m = msg.message;
         let mediaMime = null, mediaLabel = null, mediaCaption = '';
         if (m.audioMessage) {
@@ -688,14 +765,11 @@ async function startBot() {
                 const clean = sanitizeReply(mediaReply);
                 addToHistory(phone, 'assistant', clean, false);
                 saveState();
-                await new Promise(r => setTimeout(r, Math.min(Math.max(clean.length * 18, 1200), 3200)));
-                await sock.sendPresenceUpdate('paused', sender);
-                await sendTrackedMessage(sock, sender, { text: clean });
+                await sendLikeCharles(sock, sender, clean);
             } else {
                 const fallback = `Hmm I could not quite make out that ${mediaLabel}. Could you describe it or send it again.`;
                 addToHistory(phone, 'assistant', fallback, false);
                 saveState();
-                await sock.sendPresenceUpdate('paused', sender);
                 await sendTrackedMessage(sock, sender, { text: fallback });
             }
             classifyRelationship(phone).catch(() => {});
@@ -709,7 +783,6 @@ async function startBot() {
         const lower = text.trim().toLowerCase();
         const isOwner = OWNER_NOTIFY_NUMBER && sender.includes(OWNER_NOTIFY_NUMBER.replace(/\D/g, ''));
 
-        // Check what the bot has actually learned so far
         if (isOwner && lower === '/style') {
             const reply = styleProfile
                 ? `Current learned style:\n${styleProfile}`
@@ -718,7 +791,6 @@ async function startBot() {
             return;
         }
 
-        // Manual seeding (Option B)
         if (isOwner && lower.startsWith('/note ')) {
             const parts = text.trim().slice(6).split(' ');
             const target = parts[0].replace(/\D/g, '');
@@ -733,7 +805,6 @@ async function startBot() {
             return;
         }
 
-        // Save customer message
         addToHistory(phone, 'user', text, false);
 
         if (lower === '/human') {
@@ -757,7 +828,6 @@ async function startBot() {
 
         console.log(`From ${phone}: ${text}`);
 
-        // Brief "reading" pause before even showing typing - feels more natural than an instant reply
         await new Promise(r => setTimeout(r, Math.min(Math.max(text.length * 15, 400), 2500)));
         await sock.sendPresenceUpdate('composing', sender);
 
@@ -768,9 +838,7 @@ async function startBot() {
         saveState();
         classifyRelationship(phone).catch(() => {});
 
-        await new Promise(r => setTimeout(r, Math.min(Math.max(reply.length * 18, 1200), 3200)));
-        await sock.sendPresenceUpdate('paused', sender);
-        await sendTrackedMessage(sock, sender, { text: reply });
+        await sendLikeCharles(sock, sender, reply);
     });
 }
 
